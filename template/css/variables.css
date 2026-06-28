@@ -1,0 +1,49 @@
+:root {
+  /* 色彩 */
+  --color-bg-app: #c8c8c8;
+  --color-bg-panel: #e8e8e8;
+  --color-bg-menu: #d1d1d1;
+  --color-bg-dark: #4a4a4a;
+  --color-bg-image: #2a2a2a;
+  --color-ok: #00b050;
+  --color-ng: #e74c3c;
+  --color-run-active: #ff9900;
+  --color-settings: #9e9e9e;
+  --color-btn-primary: #70b5e8;
+  --color-btn-secondary: #bdbdbd;
+  --color-text-on-dark: #ffffff;
+  --color-text-primary: #212121;
+  --color-text-secondary: #616161;
+  --color-tool-selected: #fff3e0;
+  --color-tool-ok-bg: #f1f8f4;
+  --color-tool-ng-bg: #fdf2f2;
+  --color-border: #a0a0a0;
+  --color-idle: #757575;
+
+  /* 字号 */
+  --font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-size-menu: 13px;
+  --font-size-body: 14px;
+  --font-size-status: 16px;
+  --font-size-ok-ng: 48px;
+  --font-size-metric: 28px;
+
+  /* 间距与尺寸 */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --menu-height: 24px;
+  --mode-height: 52px;
+  --summary-height: 58px;
+  --header-height: 134px;
+  --footer-stats-height: 48px;
+  --footer-nav-height: 48px;
+  --footer-height: 96px;
+  --sidebar-width: 28%;
+  --sidebar-min: 320px;
+  --sidebar-max: 480px;
+  --toolbar-height: 36px;
+  --touch-min: 44px;
+}

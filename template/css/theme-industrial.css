@@ -1,0 +1,20 @@
+/* 工业灰主题微调 */
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+.select-profile:focus,
+.btn:focus-visible,
+.mode-tab:focus-visible,
+.tool-card:focus-visible {
+  outline: 2px solid var(--color-btn-primary);
+  outline-offset: 2px;
+}
+
+.stats-table span strong {
+  font-weight: 700;
+}
+
+.summary-status span + span::before {
+  content: "  ";
+}

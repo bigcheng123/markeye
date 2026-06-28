@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project runtime
+data/*.jpg
+data/*.png
+data/*.bmp
+*.log
+output/
+
+# Config override (local machine-specific)
+config/config.local.yaml
+
+# Large UI sample files
+*.iv3a

@@ -1,0 +1,79 @@
+# ============================================================
+# MarkEye 视觉检测 — 配置模板
+# 复制为 config.local.yaml 并按实际产线参数修改
+# ============================================================
+
+# 图像输入源
+input:
+  camera_id: 0            # 相机ID（--camera 模式）
+  resize_width: 1920      # 统一缩放到此宽度（保持宽高比）
+  resize_height: null     # null 表示按宽高比自动计算
+
+# 预处理参数
+preprocess:
+  # 灰度/二值化
+  gray_method: "cvt"      # cvt | weighted
+  blur_kernel: 5          # 高斯模糊核大小（奇数）
+  threshold_method: "otsu" # otsu | binary | adaptive
+  threshold_value: 127    # 二值化阈值（binary 模式用）
+  threshold_max: 255
+
+  # 透视校正（可选）
+  perspective_correct: false
+  perspective_points: []   # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+
+  # 去噪
+  morph_kernel: 3          # 形态学操作核大小
+  morph_iters: 1           # 形态学操作迭代次数
+
+# 标记检测参数
+detector:
+  method: "contour"        # contour | blob | template
+  contour_mode: "external" # external | tree
+  contour_approx: "simple" # simple | none
+  min_area: 50             # 最小标记面积 (px²)
+  max_area: 50000          # 最大标记面积 (px²)
+  min_side: 5              # 最小标记边长 (px)
+  max_side: 300            # 最大标记边长 (px)
+
+# 检查标准
+inspect:
+  # ---- 颜色检查 (HSV) ----
+  color_check: true
+  color_tolerance: 0.10    # 允许色差 10%
+  color_space: "hsv"       # hsv | rgb | lab
+  # 标准颜色定义（产线实际值）
+  colors:
+    red:
+      lower: [0, 50, 50]
+      upper: [10, 255, 255]
+    blue:
+      lower: [100, 50, 50]
+      upper: [130, 255, 255]
+    green:
+      lower: [40, 50, 50]
+      upper: [80, 255, 255]
+    yellow:
+      lower: [20, 50, 50]
+      upper: [35, 255, 255]
+    black:
+      lower: [0, 0, 0]
+      upper: [180, 255, 46]
+    white:
+      lower: [0, 0, 200]
+      upper: [180, 30, 255]
+
+  # ---- 大小检查 ----
+  size_check: true
+  size_tolerance: 0.15    # 允许面积偏差 15%
+
+  # ---- 位置检查 ----
+  position_check: true
+  position_tolerance: 10  # 允许中心偏移 (px)
+
+# 输出
+output:
+  save_result: false       # 是否保存结果图片
+  save_dir: "output/"
+  show_debug: false        # 是否显示调试窗口
+  log_level: "INFO"        # DEBUG | INFO | WARN | ERROR
