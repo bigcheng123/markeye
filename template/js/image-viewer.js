@@ -1,4 +1,4 @@
-/** 图像视口：Canvas 绘制 + SVG 叠加 */
+/** 图像视口：Canvas + SVG 叠加 */
 
 import { drawPlaceholderScene } from "./mock-data.js";
 
@@ -7,15 +7,16 @@ export class ImageViewer {
     this.root = rootEl;
     this.canvas = rootEl.querySelector("#frame-canvas");
     this.svg = rootEl.querySelector("#overlay-svg");
-    this.floatingLabel = rootEl.querySelector("#tool-label");
+    this.placeholder = rootEl.querySelector("#viewport-placeholder");
     this.zoomLabel = document.querySelector("#zoom-label");
     this.ctx = this.canvas.getContext("2d");
 
     this.scale = 1;
     this.imgWidth = 800;
     this.imgHeight = 500;
-    this.showLabels = true;
+    this.processMode = "overlay";
     this._lastMarks = [];
+    this._hasFrame = false;
 
     this._bindToolbar();
     window.addEventListener("resize", () => this._render());
@@ -33,10 +34,9 @@ export class ImageViewer {
     document.querySelector("#btn-fit")?.addEventListener("click", () => {
       this.fitToScreen();
     });
-    document.querySelector("#btn-toggle-labels")?.addEventListener("click", () => {
-      this.showLabels = !this.showLabels;
-      this.floatingLabel.hidden = !this.showLabels;
-      this._drawOverlays(this._lastMarks);
+    document.querySelector("#process-mode")?.addEventListener("change", (e) => {
+      this.processMode = e.target.value;
+      this._redrawScene();
     });
   }
 
@@ -48,10 +48,31 @@ export class ImageViewer {
     this._render();
   }
 
+  setWaiting(waiting) {
+    if (this.placeholder) {
+      this.placeholder.classList.toggle("is-hidden", !waiting);
+      this.placeholder.textContent = waiting ? "正在等待触发……" : "";
+    }
+  }
+
   updateFrame(data) {
+    if (data.idle) {
+      this._hasFrame = false;
+      this._lastMarks = [];
+      this.setWaiting(true);
+      this.canvas.width = this.imgWidth;
+      this.canvas.height = this.imgHeight;
+      drawPlaceholderScene(this.ctx, this.imgWidth, this.imgHeight, "original");
+      this._render();
+      this._drawOverlays([]);
+      return;
+    }
+
+    this._hasFrame = true;
+    this.setWaiting(false);
+
     if (data.frame?.width) this.imgWidth = data.frame.width;
     if (data.frame?.height) this.imgHeight = data.frame.height;
-
     this._lastMarks = data.marks || [];
 
     if (data.frame?.image_base64) {
@@ -66,18 +87,17 @@ export class ImageViewer {
       };
       img.src = `data:image/jpeg;base64,${data.frame.image_base64}`;
     } else {
-      this.canvas.width = this.imgWidth;
-      this.canvas.height = this.imgHeight;
-      drawPlaceholderScene(this.ctx, this.imgWidth, this.imgHeight);
-      this._render();
+      this._redrawScene();
     }
 
-    const posInsp = (data.inspections || []).find((i) => i.tool === "position");
-    if (posInsp && this.showLabels) {
-      this.floatingLabel.textContent = `Tool 03: ${posInsp.value}`;
-      this.floatingLabel.hidden = false;
-    }
+    this._drawOverlays(this._lastMarks);
+  }
 
+  _redrawScene() {
+    this.canvas.width = this.imgWidth;
+    this.canvas.height = this.imgHeight;
+    drawPlaceholderScene(this.ctx, this.imgWidth, this.imgHeight, this.processMode);
+    this._render();
     this._drawOverlays(this._lastMarks);
   }
 
@@ -87,7 +107,6 @@ export class ImageViewer {
     const ch = wrap.clientHeight;
     const displayW = this.imgWidth * this.scale;
     const displayH = this.imgHeight * this.scale;
-
     const tx = (cw - displayW) / 2;
     const ty = (ch - displayH) / 2;
 
@@ -113,6 +132,8 @@ export class ImageViewer {
       this.svg.removeChild(this.svg.firstChild);
     }
 
+    if (!this._hasFrame || !marks.length) return;
+
     const scaleX = this.imgWidth ? this.svg.clientWidth / this.imgWidth : 1;
     const scaleY = this.imgHeight ? this.svg.clientHeight / this.imgHeight : 1;
 
@@ -130,16 +151,13 @@ export class ImageViewer {
       rect.setAttribute("stroke-width", "2");
       this.svg.appendChild(rect);
 
-      if (this.showLabels) {
-        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        text.setAttribute("x", x * scaleX);
-        text.setAttribute("y", y * scaleY - 4);
-        text.setAttribute("fill", color);
-        text.setAttribute("font-size", "12");
-        text.setAttribute("font-family", "sans-serif");
-        text.textContent = mark.label;
-        this.svg.appendChild(text);
-      }
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", x * scaleX);
+      text.setAttribute("y", y * scaleY - 4);
+      text.setAttribute("fill", color);
+      text.setAttribute("font-size", "12");
+      text.textContent = mark.label;
+      this.svg.appendChild(text);
     }
   }
 }

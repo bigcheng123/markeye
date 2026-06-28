@@ -12,80 +12,110 @@
 </head>
 <body>
   <div id="connection-banner" role="alert" aria-live="polite"></div>
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <div id="app" class="app-root">
-    <!-- ── Header ── -->
+  <div id="app" class="app-root view-run">
+    <!-- ── GLOBAL_SHELL ── -->
     <header id="region-header">
       <nav id="region-menu" aria-label="主菜单">
-        <span class="menu-item">文件(<kbd>F</kbd>)</span>
-        <span class="menu-item">显示(<kbd>V</kbd>)</span>
-        <span class="menu-item">传感器(<kbd>S</kbd>)</span>
-        <span class="menu-item">图像(<kbd>I</kbd>)</span>
-        <span class="menu-item">设定(<kbd>S</kbd>)</span>
-        <span class="menu-item">窗口(<kbd>W</kbd>)</span>
-        <span class="menu-item">帮助(<kbd>H</kbd>)</span>
+        <span class="menu-item" data-action="menu-file">文件(<kbd>F</kbd>)</span>
+        <span class="menu-item" data-action="menu-view">显示(<kbd>V</kbd>)</span>
+        <span class="menu-item" data-action="menu-sensor">传感器(<kbd>R</kbd>)</span>
+        <span class="menu-item" data-action="menu-image">图像(<kbd>I</kbd>)</span>
+        <span class="menu-item" data-action="menu-settings">设定(<kbd>S</kbd>)</span>
+        <span class="menu-item" data-action="menu-window">窗口(<kbd>W</kbd>)</span>
+        <span class="menu-item" data-action="menu-help">帮助(<kbd>H</kbd>)</span>
       </nav>
 
-      <div id="region-mode">
+      <div id="region-quick-toolbar" aria-label="传感器快捷操作">
+        <button type="button" id="btn-sensor-switch" class="btn btn-quick" data-action="sensor-switch">
+          切换连接的传感器
+        </button>
+        <button type="button" id="btn-sensor-disconnect" class="btn btn-quick" data-action="sensor-disconnect">
+          断开传感器
+        </button>
+        <button type="button" id="btn-connect-monitor" class="btn btn-quick" data-action="connect-monitor">
+          连接监控器
+        </button>
+      </div>
+
+      <div id="region-mode-program-bar">
         <div class="mode-tabs">
           <button type="button" class="mode-tab is-active" data-mode="run" aria-pressed="true">
-            <img src="../icon/mode/run-active.svg" alt="" />
+            <img src="../icon/mode/run-active.svg" alt="" class="mode-icon mode-icon--run" />
             运行中
           </button>
           <button type="button" class="mode-tab" data-mode="settings" aria-pressed="false">
-            <img src="../icon/mode/settings-inactive.svg" alt="" />
+            <img src="../icon/mode/settings-inactive.svg" alt="" class="mode-icon mode-icon--set" />
             设定
           </button>
         </div>
-        <div class="mode-profile">
+        <div class="program-bar-section">
+          <label class="program-label" for="config-profile">选择程序</label>
           <select id="config-profile" class="select-profile" aria-label="配置方案">
-            <option value="config.yaml">P001: config.yaml — 默认方案</option>
-            <option value="config.local.yaml">P002: config.local.yaml — 产线方案</option>
+            <option value="P006">P006: PROG_006</option>
+            <option value="P001">P001: config.yaml — 默认方案</option>
+            <option value="P002">P002: config.local.yaml — 产线方案</option>
           </select>
-          <button type="button" id="btn-details" class="btn btn-secondary">详细</button>
-        </div>
-      </div>
-
-      <div id="region-summary">
-        <div id="verdict-badge" class="state-idle" aria-live="polite">—</div>
-        <div class="summary-status">
-          <span id="learn-count">已学习: —</span>
-          <span id="trigger-mode">—</span>
-          <span id="process-time">处理: —</span>
-        </div>
-        <div class="summary-actions">
-          <button type="button" id="btn-learn-add" class="btn btn-primary">
-            <img src="../icon/action/learn-add.svg" alt="" />
-            追加学习
-          </button>
-          <button type="button" id="btn-threshold" class="btn btn-secondary">
-            <img src="../icon/action/threshold.svg" alt="" />
-            调节阈值
-          </button>
+          <div class="program-actions">
+            <button type="button" id="btn-details" class="btn btn-program" data-action="program-details">详细</button>
+            <button type="button" id="btn-image-history" class="btn btn-program" data-action="image-history">
+              运行/学习<br />图像历史
+            </button>
+            <button type="button" id="btn-io-settings" class="btn btn-program" data-action="io-settings">
+              I/O 输入输出<br />设定
+            </button>
+            <button type="button" id="btn-extended" class="btn btn-program" data-action="extended-settings">
+              扩展设定
+            </button>
+          </div>
         </div>
       </div>
     </header>
 
-    <!-- ── Main ── -->
+    <!-- ── Wizard step nav (SET 向导时显示) ── -->
+    <nav id="wizard-step-nav" class="wizard-step-nav" hidden aria-label="设定向导步骤">
+      <button type="button" class="wizard-step is-active" data-step="1">1 拍摄条件</button>
+      <span class="wizard-step-arrow">›</span>
+      <button type="button" class="wizard-step" data-step="2">2 注册主控</button>
+      <span class="wizard-step-arrow">›</span>
+      <button type="button" class="wizard-step" data-step="3">3 工具设定</button>
+      <span class="wizard-step-arrow">›</span>
+      <button type="button" class="wizard-step" data-step="4">4 输出分配</button>
+    </nav>
+
+    <!-- ── Main workspace ── -->
     <main id="region-main" class="main-body">
-      <section id="region-image" aria-label="图像显示">
+      <div id="region-left-col" class="left-col">
+        <div id="region-status-header" class="status-header">
+          <span id="status-badge" class="status-badge status-badge--idle" hidden>Master</span>
+          <span id="learn-count">已学习: —</span>
+          <span id="trigger-mode">—</span>
+          <span id="process-time">处理: —</span>
+        </div>
+
         <div id="image-toolbar">
-          <button type="button" id="btn-zoom-in" class="btn btn-icon" title="放大">
-            <img src="../icon/toolbar/zoom-in.svg" alt="放大" />
-          </button>
-          <button type="button" id="btn-zoom-out" class="btn btn-icon" title="缩小">
+          <button type="button" id="btn-zoom-out" class="btn btn-icon" title="缩小" data-action="zoom-out">
             <img src="../icon/toolbar/zoom-out.svg" alt="缩小" />
           </button>
           <span id="zoom-label">100%</span>
+          <button type="button" id="btn-zoom-in" class="btn btn-icon" title="放大" data-action="zoom-in">
+            <img src="../icon/toolbar/zoom-in.svg" alt="放大" />
+          </button>
           <span class="toolbar-sep"></span>
-          <button type="button" id="btn-fit" class="btn btn-icon" title="适应屏幕">
+          <button type="button" id="btn-fit" class="btn btn-icon" title="适应屏幕" data-action="zoom-fit">
             <img src="../icon/toolbar/fit-screen.svg" alt="适应" />
           </button>
-          <button type="button" class="btn btn-icon" title="处理视图">
-            <img src="../icon/toolbar/process.svg" alt="处理" />
+          <select id="process-mode" class="select-process" aria-label="处理视图" data-action="process-mode">
+            <option value="overlay">处理</option>
+            <option value="original">原图</option>
+            <option value="binary">二值化</option>
+          </select>
+          <button type="button" id="btn-trigger" class="btn btn-toolbar-action" data-action="trigger">
+            <span class="btn-trigger-icon">T</span> 触发
           </button>
-          <button type="button" id="btn-toggle-labels" class="btn btn-icon" title="标注文字">
-            <img src="../icon/toolbar/text-tool.svg" alt="文字" />
+          <button type="button" id="btn-save-frame" class="btn btn-toolbar-action" data-action="save-frame">
+            保存
           </button>
         </div>
 
@@ -93,62 +123,93 @@
           <div id="image-viewport" class="image-viewport">
             <canvas id="frame-canvas" aria-label="检测图像"></canvas>
             <svg id="overlay-svg" class="overlay-layer" aria-hidden="true"></svg>
-            <div id="tool-label" class="floating-label" hidden>Tool 03: —</div>
+            <div id="viewport-placeholder" class="viewport-placeholder">正在等待触发……</div>
           </div>
         </div>
 
-        <div id="settings-panel" aria-label="参数设定"></div>
-      </section>
-
-      <aside id="region-tools" aria-label="检查项">
-        <div id="tool-list" class="tool-list"></div>
-        <div id="tool-detail"></div>
-      </aside>
-    </main>
-
-    <!-- ── Footer ── -->
-    <footer id="region-footer">
-      <div id="region-stats">
-        <div class="stats-table">
-          <span>处理时间: <strong id="stat-process">—</strong> ms</span>
-          <span>Max: <strong id="stat-max">—</strong> ms</span>
-          <span>Min: <strong id="stat-min">—</strong> ms</span>
-          <span>Ave: <strong id="stat-ave">—</strong> ms</span>
-        </div>
-        <div class="stats-actions">
-          <button type="button" id="btn-switch" class="btn btn-secondary">
-            <img src="../icon/action/switch.svg" alt="" />
-            切换
-          </button>
-          <button type="button" id="btn-reset" class="btn btn-secondary btn-danger">
-            <img src="../icon/action/reset.svg" alt="" />
-            复位
-          </button>
+        <div id="region-run-footer" class="run-footer">
+          <div class="run-footer__tables">
+            <table class="stats-mini-table" aria-label="处理时间">
+              <thead>
+                <tr><th colspan="4">处理时间</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>—</td>
+                  <td>Max <strong id="stat-max">—</strong></td>
+                  <td>Min <strong id="stat-min">—</strong></td>
+                  <td>Ave <strong id="stat-ave">—</strong></td>
+                </tr>
+              </tbody>
+            </table>
+            <table class="stats-mini-table" aria-label="触发数量">
+              <thead>
+                <tr><th colspan="4">触发数量</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>合计 <strong id="stat-trigger-total">0</strong></td>
+                  <td>OK <strong id="stat-ok">0</strong></td>
+                  <td>NG <strong id="stat-ng">0</strong></td>
+                  <td>TrERR <strong id="stat-trerr">0</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="run-footer__actions">
+            <button type="button" id="btn-switch" class="btn btn-secondary" data-action="switch-source">
+              <img src="../icon/action/switch.svg" alt="" /> 切换
+            </button>
+            <button type="button" id="btn-reset" class="btn btn-secondary btn-danger" data-action="reset-stats">
+              <img src="../icon/action/reset.svg" alt="" /> 复位
+            </button>
+          </div>
         </div>
       </div>
 
-      <nav id="region-nav" aria-label="底部导航">
-        <div class="nav-group">
-          <button type="button" class="btn btn-nav">
-            <img src="../icon/nav/menu.svg" alt="" />
-            菜单
+      <!-- RUN: Tool panel -->
+      <aside id="region-tools" aria-label="检查项">
+        <div id="tool-actions" class="tool-actions">
+          <button type="button" id="btn-learn-add" class="btn btn-primary" data-action="learn-add">
+            <img src="../icon/action/learn-add.svg" alt="" /> 追加学习该图像
           </button>
-          <button type="button" id="btn-disconnect" class="btn btn-nav">
-            <img src="../icon/nav/disconnect.svg" alt="" />
-            切换/断开
-          </button>
-        </div>
-        <div class="nav-group">
-          <button type="button" class="btn btn-nav">
-            <img src="../icon/nav/statistics.svg" alt="" />
-            统计
-          </button>
-          <button type="button" class="btn btn-nav">
-            <img src="../icon/nav/switch-screen.svg" alt="" />
-            切换画面
+          <button type="button" id="btn-threshold" class="btn btn-secondary" data-action="adjust-threshold">
+            <img src="../icon/action/threshold.svg" alt="" /> 调节阈值
           </button>
         </div>
-      </nav>
+        <div id="tool-list" class="tool-list"></div>
+        <div id="tool-detail"></div>
+      </aside>
+
+      <!-- SET: 设定首页 -->
+      <aside id="view-set-menu" class="set-menu" aria-label="传感器设定菜单">
+        <h2 class="set-menu__title">传感器设定菜单</h2>
+        <button type="button" id="btn-navi-wizard" class="btn-navi" data-action="navi-wizard">
+          <span class="btn-navi__icon">NAVI</span>
+          <span class="btn-navi__label">传感器设定</span>
+        </button>
+        <p class="set-menu__hint">按步骤设定判断对象物所需的设定项目。</p>
+      </aside>
+
+      <!-- SET: 向导右栏 -->
+      <div id="wizard-content" class="wizard-content" aria-label="向导配置"></div>
+    </main>
+
+    <!-- SET: 向导底栏 -->
+    <footer id="wizard-footer" class="wizard-footer" hidden>
+      <button type="button" id="wizard-back" class="btn btn-secondary" data-action="wizard-back">‹ 返回</button>
+      <button type="button" id="wizard-next" class="btn btn-primary btn-wizard-next" data-action="wizard-next">
+        进入到STEP2 ›
+      </button>
+      <button type="button" id="wizard-exit" class="btn btn-secondary" data-action="wizard-exit">退出向导</button>
+    </footer>
+
+    <!-- Device status bar -->
+    <footer id="region-device-status" class="device-status" aria-label="设备信息">
+      <span>传感器型号: <strong id="device-model">MarkEye-Cam</strong></span>
+      <span>机器名称: <strong id="device-name">MarkEye-01</strong></span>
+      <span>IP: <strong id="device-ip">127.0.0.1</strong></span>
+      <span>MAC: <strong id="device-mac">00:00:00:00:00:01</strong></span>
     </footer>
   </div>
 
@@ -160,6 +221,17 @@
       <div class="modal__actions">
         <button type="button" id="modal-cancel" class="btn btn-secondary">取消</button>
         <button type="button" id="modal-ok" class="btn btn-primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 信息弹窗 -->
+  <div id="info-overlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="info-title">
+    <div class="modal">
+      <div id="info-title" class="modal__title">提示</div>
+      <p id="info-message"></p>
+      <div class="modal__actions">
+        <button type="button" id="info-close" class="btn btn-primary">确定</button>
       </div>
     </div>
   </div>

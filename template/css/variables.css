@@ -8,6 +8,7 @@
   --color-ok: #00b050;
   --color-ng: #e74c3c;
   --color-run-active: #ff9900;
+  --color-set-active: #ffc000;
   --color-settings: #9e9e9e;
   --color-btn-primary: #70b5e8;
   --color-btn-secondary: #bdbdbd;
@@ -19,14 +20,16 @@
   --color-tool-ng-bg: #fdf2f2;
   --color-border: #a0a0a0;
   --color-idle: #757575;
+  --color-wizard-step-active: #ff9900;
+  --color-master-badge: #00a896;
 
   /* 字号 */
   --font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
   --font-size-menu: 13px;
   --font-size-body: 14px;
   --font-size-status: 16px;
-  --font-size-ok-ng: 48px;
   --font-size-metric: 28px;
+  --font-size-wizard-title: 20px;
 
   /* 间距与尺寸 */
   --radius-sm: 2px;
@@ -34,16 +37,18 @@
   --spacing-xs: 4px;
   --spacing-sm: 8px;
   --spacing-md: 16px;
-  --menu-height: 24px;
-  --mode-height: 52px;
-  --summary-height: 58px;
-  --header-height: 134px;
-  --footer-stats-height: 48px;
-  --footer-nav-height: 48px;
-  --footer-height: 96px;
-  --sidebar-width: 28%;
-  --sidebar-min: 320px;
-  --sidebar-max: 480px;
+  --menu-height: 28px;
+  --quick-toolbar-height: 28px;
+  --mode-program-bar-height: 48px;
+  --wizard-nav-height: 44px;
+  --device-status-height: 28px;
+  --wizard-footer-height: 52px;
+  --run-footer-height: 72px;
+  --sidebar-width: 38%;
+  --sidebar-min: 360px;
+  --sidebar-max: 520px;
   --toolbar-height: 36px;
+  --status-header-height: 36px;
   --touch-min: 44px;
 }
+

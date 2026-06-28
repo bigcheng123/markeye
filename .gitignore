@@ -29,3 +29,6 @@ config/config.local.yaml
 
 # Large UI sample files
 *.iv3a
+
+# Node
+node_modules/
