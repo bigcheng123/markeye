@@ -1,11 +1,12 @@
-/** MarkEye Web UI 入口（纯前端 Mock，无 Python 后端） */
+/** MarkEye Web UI 入口 */
 
-import { ApiClient } from "./api-client.js";
+import { ApiClient, isMockMode } from "./api-client.js";
 import { ImageViewer } from "./image-viewer.js";
 import { ToolPanel } from "./tool-panel.js";
 import { StatusBar } from "./status-bar.js";
 import { SetMenu } from "./set-menu.js";
 import { Wizard } from "./wizard.js";
+import { playNgAlert } from "./ng-alert.js";
 import {
   initLayout,
   showConnectionBanner,
@@ -44,6 +45,7 @@ class MarkEyeApp {
     this.api = new ApiClient({
       onFrame: (data) => this._onFrame(data),
       onConnectionChange: (connected) => {
+        showConnectionBanner(!connected && !isMockMode());
         if (!connected && this.view === "run") {
           this.statusBar.setIdle();
           this.imageViewer.setWaiting(true);
@@ -51,6 +53,7 @@ class MarkEyeApp {
       },
     });
     this.api.start();
+    this._loadProfiles();
     this._setView("run");
     requestAnimationFrame(() => this.imageViewer.fitToScreen());
 
@@ -62,9 +65,31 @@ class MarkEyeApp {
 
   _onFrame(data) {
     if (this.view !== "run") return;
+    if (data.overall?.passed === false && !data.idle) {
+      playNgAlert();
+    }
     this.statusBar.update(data);
     this.imageViewer.updateFrame(data);
     this.toolPanel.update(data);
+  }
+
+  async _loadProfiles() {
+    const sel = document.querySelector("#config-profile");
+    if (!sel) return;
+    try {
+      const res = await this.api.get("/api/config/list");
+      const profiles = res.profiles || [];
+      sel.innerHTML = "";
+      for (const p of profiles) {
+        const opt = document.createElement("option");
+        opt.value = p.name;
+        opt.textContent = `${p.id}: ${p.name}`;
+        if (p.active) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    } catch {
+      /* 保持 HTML 默认项 */
+    }
   }
 
   _setView(view) {
@@ -76,7 +101,9 @@ class MarkEyeApp {
       this.wizard.hide();
       this.statusBar.setWaiting();
       this.api?.reconnect?.() || this.api?.start();
-      this._onFrame(createIdleFrame());
+      if (isMockMode()) {
+        this._onFrame(createIdleFrame());
+      }
     } else if (view === "set") {
       this.wizard.hide();
       this.api?.stop();
@@ -101,8 +128,13 @@ class MarkEyeApp {
   }
 
   async _completeWizard() {
-    registerMaster();
-    await infoModal("完成", "传感器设定已完成（Mock）。配置已保存到本地状态。");
+    if (!isMockMode()) {
+      await this.api.post("/api/calibration/master");
+      await this.api.put("/api/wizard/step/4", {});
+    } else {
+      registerMaster();
+    }
+    await infoModal("完成", "传感器设定已完成，配置已保存。");
     this._setView("set");
     showToast("向导完成", "ok");
   }
@@ -124,7 +156,9 @@ class MarkEyeApp {
       "menu-image": "图像：截图 / 保存当前帧（Mock）",
       "menu-settings": "设定：切换至设定模式",
       "menu-window": "窗口：全屏 / 置顶（Mock）",
-      "menu-help": "MarkEye Web UI v1.1 — 纯前端 Mock 模式",
+      "menu-help": isMockMode()
+        ? "MarkEye Web UI — Mock 模式 (?mock=1)"
+        : "MarkEye Web UI — 已连接后端",
     };
 
     document.querySelectorAll(".menu-item[data-action]").forEach((el) => {
@@ -201,10 +235,12 @@ class MarkEyeApp {
     document.querySelector("#btn-reset")?.addEventListener("click", async () => {
       const ok = await confirmModal("确定要复位 OK/NG 统计计数吗？");
       if (!ok) return;
-      resetMockStats();
-      this.toolPanel.history = { learn: [], color: [] };
+      if (isMockMode()) {
+        resetMockStats();
+        this.toolPanel.history = { learn: [], color: [], size: [], position: [] };
+      }
       await this.api?.post("/api/stats/reset");
-      this._onFrame(createIdleFrame());
+      if (isMockMode()) this._onFrame(createIdleFrame());
       showToast("统计已复位", "ok");
     });
 

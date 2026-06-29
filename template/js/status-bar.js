@@ -48,7 +48,8 @@ export class StatusBar {
     this.triggerMode.textContent = triggerLabel;
 
     if (data.idle) {
-      this._setBadge("master");
+      const hasPreview = Boolean(data.frame?.image_base64);
+      this._setBadge(hasPreview ? "live" : "master");
       this.processTime.textContent = "处理: —ms";
     } else {
       this._setBadge("master");

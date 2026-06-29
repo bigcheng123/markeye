@@ -6,12 +6,25 @@ export class ToolPanel {
   constructor() {
     this.listEl = document.querySelector("#tool-list");
     this.detailEl = document.querySelector("#tool-detail");
-    this.selectedTool = "learn";
-    this.history = { learn: [], color: [] };
-    this._meta = getToolMeta();
+    this.selectedTool = null;
+    this.history = {};
+    this._meta = { ...getToolMeta() };
     this._bindList();
     this._renderDetailShell();
     this.onThresholdChange = null;
+  }
+
+  _syncMetaFromInspections(inspections) {
+    for (const insp of inspections || []) {
+      const existing = this._meta[insp.tool] || {};
+      this._meta[insp.tool] = {
+        id: existing.id || insp.tool || "—",
+        name: insp.name || existing.name || insp.tool,
+        min: 0,
+        max: 100,
+        threshold: insp.threshold ?? existing.threshold ?? 0,
+      };
+    }
   }
 
   _bindList() {
@@ -39,11 +52,15 @@ export class ToolPanel {
   update(data) {
     this._lastInspections = data.inspections || [];
     this._lastStats = data.stats || {};
+    this._syncMetaFromInspections(this._lastInspections);
+
+    if (!this.selectedTool || !this._meta[this.selectedTool]) {
+      this.selectedTool = this._lastInspections[0]?.tool || this.selectedTool;
+    }
 
     if (!data.idle) {
       for (const insp of this._lastInspections) {
-        const arr = this.history[insp.tool];
-        if (!arr) continue;
+        const arr = (this.history[insp.tool] = this.history[insp.tool] || []);
         arr.push(insp.value);
         if (arr.length > 30) arr.shift();
       }
@@ -120,7 +137,7 @@ export class ToolPanel {
 
     if (title) title.textContent = `Tool ${meta.id}: ${meta.name}`;
 
-    const threshold = meta.threshold;
+    const threshold = insp?.threshold ?? meta.threshold;
     if (slider) slider.value = threshold;
     if (sliderVal) sliderVal.textContent = threshold;
 

@@ -14,16 +14,8 @@ from pathlib import Path
 import cv2
 import yaml
 
-from .preprocessor import Preprocessor
-from .detector import Detector
-from .inspector import Inspector
-from .utils import (
-    imread,
-    imwrite,
-    draw_detection,
-    overlay_result,
-    setup_logger,
-)
+from .pipeline import DetectionPipeline
+from .utils import imread, imwrite, setup_logger
 
 logger = setup_logger()
 
@@ -47,55 +39,37 @@ def process_image(
         logger.error(f"无法读取图片: {img_path}")
         return False
 
-    # 预处理
-    preprocessor = Preprocessor(cfg)
-    binary = preprocessor.process(img)
+    pipeline = DetectionPipeline(cfg)
+    result = pipeline.run(img)
 
     if debug:
+        preprocessor_cfg = cfg.get("preprocess", {})
+        from .preprocessor import Preprocessor
+
+        binary = Preprocessor(cfg).process(img)
         cv2.imshow("Binary", binary)
 
-    # 检测
-    detector = Detector(cfg)
-    marks = detector.detect(binary, img)
-    logger.info(f"检测到 {len(marks)} 个标记")
-
-    # 检查
-    inspector = Inspector(cfg)
-    results = inspector.inspect(img, marks)
-
-    # 汇总
-    all_pass = all(r.passed for r in results)
-    fail_details = []
-    for r in results:
+    for r in result.inspections:
         if not r.passed:
-            fail_details.extend(r.fail_reasons)
             logger.warning(f"  {r.mark.label}: {' | '.join(r.fail_reasons)}")
 
-    # 可视化
-    result_img = img.copy()
-    for r in results:
-        color = (0, 200, 0) if r.passed else (0, 0, 200)
-        result_img = draw_detection(result_img, r.mark.contour, color, r.mark.label)
-
-    result_img = overlay_result(result_img, all_pass, fail_details)
-
-    # 保存/显示
     output_cfg = cfg.get("output", {})
-    if output_cfg.get("save_result", False):
+    if output_cfg.get("save_result", False) and result.result_image is not None:
         save_dir = output_cfg.get("save_dir", "output")
         out_path = Path(save_dir) / f"result_{Path(img_path).name}"
-        imwrite(str(out_path), result_img)
+        imwrite(str(out_path), result.result_image)
         logger.info(f"结果保存: {out_path}")
 
     if debug or output_cfg.get("show_debug", False):
-        cv2.imshow("Result", result_img)
-        logger.info("按任意键关闭窗口...")
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+        if result.result_image is not None:
+            cv2.imshow("Result", result.result_image)
+            logger.info("按任意键关闭窗口...")
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
 
-    status = "✅ PASS" if all_pass else "❌ FAIL"
-    logger.info(f"{status} — {img_path}")
-    return all_pass
+    status = "✅ PASS" if result.passed else "❌ FAIL"
+    logger.info(f"{status} — {img_path} ({result.process_ms}ms)")
+    return result.passed
 
 
 def process_camera(camera_id: int, cfg: dict):
@@ -105,10 +79,7 @@ def process_camera(camera_id: int, cfg: dict):
         logger.error(f"无法打开相机 {camera_id}")
         return
 
-    preprocessor = Preprocessor(cfg)
-    detector = Detector(cfg)
-    inspector = Inspector(cfg)
-
+    pipeline = DetectionPipeline(cfg)
     logger.info(f"相机 {camera_id} 已启动，按 'q' 退出")
 
     while True:
@@ -116,22 +87,8 @@ def process_camera(camera_id: int, cfg: dict):
         if not ret:
             break
 
-        binary = preprocessor.process(frame)
-        marks = detector.detect(binary, frame)
-        results = inspector.inspect(frame, marks)
-
-        all_pass = all(r.passed for r in results)
-        fail_details = []
-        for r in results:
-            if not r.passed:
-                fail_details.extend(r.fail_reasons)
-                logger.warning(f"  {r.mark.label}: {' | '.join(r.fail_reasons)}")
-
-        display = frame.copy()
-        for r in results:
-            color = (0, 200, 0) if r.passed else (0, 0, 200)
-            display = draw_detection(display, r.mark.contour, color, r.mark.label)
-        display = overlay_result(display, all_pass, fail_details)
+        result = pipeline.run(frame)
+        display = result.result_image if result.result_image is not None else frame
 
         cv2.imshow("MarkEye — 实时检测", display)
         if cv2.waitKey(1) & 0xFF == ord("q"):

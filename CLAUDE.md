@@ -41,6 +41,9 @@ python src/main.py --image path/to/image.jpg
 # 相机实时模式
 python src/main.py --camera 0
 
+# Web UI 服务（产线）
+python -m src.web_server
+
 # 指定配置
 python src/main.py --image path/to/image.jpg --config config/config.yaml
 

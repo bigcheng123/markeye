@@ -1,79 +1,169 @@
-# ============================================================
-# MarkEye 视觉检测 — 配置模板
-# 复制为 config.local.yaml 并按实际产线参数修改
-# ============================================================
-
-# 图像输入源
 input:
-  camera_id: 0            # 相机ID（--camera 模式）
-  resize_width: 1920      # 统一缩放到此宽度（保持宽高比）
-  resize_height: null     # null 表示按宽高比自动计算
-
-# 预处理参数
+  camera_id: 0
+  fallback_image: C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-3\test_trigger0\sample.jpg
 preprocess:
-  # 灰度/二值化
-  gray_method: "cvt"      # cvt | weighted
-  blur_kernel: 5          # 高斯模糊核大小（奇数）
-  threshold_method: "otsu" # otsu | binary | adaptive
-  threshold_value: 127    # 二值化阈值（binary 模式用）
+  resize_width: 1280
+  resize_height: null
+  gray_method: cvt
+  blur_kernel: 5
+  threshold_method: otsu
+  threshold_value: 127
   threshold_max: 255
-
-  # 透视校正（可选）
   perspective_correct: false
-  perspective_points: []   # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-
-  # 去噪
-  morph_kernel: 3          # 形态学操作核大小
-  morph_iters: 1           # 形态学操作迭代次数
-
-# 标记检测参数
+  perspective_points: []
+  morph_kernel: 3
+  morph_iters: 1
+calibration:
+  master_image: //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案
+    · 课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master.jpg
+  sample_count: 1
+  reference_center:
+  - 26
+  - 713
+  reference_area: 2053.0
+  learn_threshold: 73
+trigger:
+  source: external
+  exposure_ms: null
 detector:
-  method: "contour"        # contour | blob | template
-  contour_mode: "external" # external | tree
-  contour_approx: "simple" # simple | none
-  min_area: 50             # 最小标记面积 (px²)
-  max_area: 50000          # 最大标记面积 (px²)
-  min_side: 5              # 最小标记边长 (px)
-  max_side: 300            # 最大标记边长 (px)
-
-# 检查标准
+  method: contour
+  contour_mode: external
+  contour_approx: simple
+  min_area: 50
+  max_area: 50000
+  min_side: 5
+  max_side: 300
 inspect:
-  # ---- 颜色检查 (HSV) ----
   color_check: true
-  color_tolerance: 0.10    # 允许色差 10%
-  color_space: "hsv"       # hsv | rgb | lab
-  # 标准颜色定义（产线实际值）
+  color_tolerance: 0.1
+  color_space: hsv
   colors:
     red:
-      lower: [0, 50, 50]
-      upper: [10, 255, 255]
+      lower:
+      - 0
+      - 50
+      - 50
+      upper:
+      - 10
+      - 255
+      - 255
     blue:
-      lower: [100, 50, 50]
-      upper: [130, 255, 255]
+      lower:
+      - 100
+      - 50
+      - 50
+      upper:
+      - 130
+      - 255
+      - 255
     green:
-      lower: [40, 50, 50]
-      upper: [80, 255, 255]
+      lower:
+      - 40
+      - 50
+      - 50
+      upper:
+      - 80
+      - 255
+      - 255
     yellow:
-      lower: [20, 50, 50]
-      upper: [35, 255, 255]
+      lower:
+      - 20
+      - 50
+      - 50
+      upper:
+      - 35
+      - 255
+      - 255
     black:
-      lower: [0, 0, 0]
-      upper: [180, 255, 46]
+      lower:
+      - 0
+      - 0
+      - 0
+      upper:
+      - 180
+      - 255
+      - 46
     white:
-      lower: [0, 0, 200]
-      upper: [180, 30, 255]
-
-  # ---- 大小检查 ----
+      lower:
+      - 0
+      - 0
+      - 200
+      upper:
+      - 180
+      - 30
+      - 255
   size_check: true
-  size_tolerance: 0.15    # 允许面积偏差 15%
-
-  # ---- 位置检查 ----
+  size_tolerance: 0.15
   position_check: true
-  position_tolerance: 10  # 允许中心偏移 (px)
-
-# 输出
+  position_tolerance: 10
+tools:
+- id: '01'
+  name: 色彩识别
+  type: hsv_roi
+  enabled: true
+  roi:
+    shape: rect
+    x: 100
+    y: 100
+    w: 120
+    h: 80
+  params:
+    h_lower:
+    - 0
+    - 50
+    - 50
+    h_upper:
+    - 180
+    - 255
+    - 255
+- id: '02'
+  name: 轮廓识别
+  type: contour_roi
+  enabled: true
+  roi:
+    shape: rect
+    x: 260
+    y: 120
+    w: 180
+    h: 140
+  params:
+    target_shape: rect
+    size_tolerance: 0.15
+    position_tolerance: 10
+    min_area: 80
+    canny1: 50
+    canny2: 150
+    blur: 3
+    expected:
+      center:
+      - 350
+      - 190
+      size:
+      - 120
+      - 80
+io:
+  enabled: false
+  host: 127.0.0.1
+  port: 502
+  unit_id: 1
+  outputs:
+    ok: null
+    ng: null
+    ready: null
+    busy: null
+  comprehensive_logic: 1
+  auto_switch:
+    enabled: false
+    ok_program: null
+    ng_program: null
+    delay_ms: 0
+  trerr_enabled: true
 output:
-  save_result: false       # 是否保存结果图片
-  save_dir: "output/"
-  show_debug: false        # 是否显示调试窗口
-  log_level: "INFO"        # DEBUG | INFO | WARN | ERROR
+  save_result: false
+  save_policy: none
+  save_dir: output/
+  show_debug: false
+  log_level: INFO
+  ng_alert: true
+  stats_file: output/stats.json
+  jpeg_quality: 70

@@ -32,3 +32,10 @@ config/config.local.yaml
 
 # Node
 node_modules/
+
+# Syncthing
+.stfolder/
+*.sync-conflict-*
+
+# Local agent/workspace settings
+.claude/settings.local.json

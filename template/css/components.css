@@ -622,3 +622,26 @@
     transform: translateY(0);
   }
 }
+
+/* 工具栏右侧综合判定 OK/NG */
+.verdict-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 4px 14px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  line-height: 1.2;
+  align-self: center;
+}
+
+.verdict-badge--ok {
+  background: var(--color-ok, #00b050);
+}
+
+.verdict-badge--ng {
+  background: var(--color-ng, #e74c3c);
+}

@@ -86,7 +86,7 @@ class Inspector:
                 mask = cv2.inRange(
                     np.array([[[h, s, v]]], dtype=np.uint8), lower, upper
                 )
-                if mask[0, 0]:
+                if bool(mask[0, 0]):
                     return True, name, 0.0
 
             # 计算距离（简单欧氏）
@@ -100,7 +100,7 @@ class Inspector:
 
         range_diag = np.linalg.norm(np.array([180, 255, 255], dtype=np.float32))
         relative_dist = best_dist / range_diag if range_diag > 0 else 1.0
-        color_pass = relative_dist <= tolerance
+        color_pass = bool(relative_dist <= tolerance)
 
         return color_pass, best_name, round(relative_dist, 3)
 
@@ -111,7 +111,7 @@ class Inspector:
         if ref_area is None:
             return True, 0.0
         deviation = abs(mark.area - ref_area) / ref_area
-        size_pass = deviation <= tolerance
+        size_pass = bool(deviation <= tolerance)
         return size_pass, round(deviation, 3)
 
     def _check_position(self, mark: MarkResult, ref_center: Optional[tuple] = None) -> tuple[bool, float]:
@@ -122,13 +122,14 @@ class Inspector:
         dx = mark.center[0] - ref_center[0]
         dy = mark.center[1] - ref_center[1]
         offset = np.sqrt(dx**2 + dy**2)
-        position_pass = offset <= tolerance
+        position_pass = bool(offset <= tolerance)
         return position_pass, round(offset, 1)
 
     def inspect(
         self,
         img: np.ndarray,
         marks: list[MarkResult],
+        full_config: Optional[dict] = None,
     ) -> list[InspectionResult]:
         """对检测到的标记逐一执行检查"""
         results = []
@@ -137,9 +138,15 @@ class Inspector:
         position_check = self.cfg.get("position_check", True)
         color_defs = self.cfg.get("colors", {})
 
-        # 参考值：以第一个标记为准
-        ref_area = marks[0].area if marks else None
-        ref_center = marks[0].center if marks else None
+        cal = (full_config or {}).get("calibration", {})
+        ref_area = cal.get("reference_area")
+        ref_center = cal.get("reference_center")
+        if ref_center is not None:
+            ref_center = tuple(ref_center)
+        if ref_area is None and marks:
+            ref_area = marks[0].area
+        if ref_center is None and marks:
+            ref_center = marks[0].center
 
         for mark in marks:
             ir = InspectionResult(mark=mark)

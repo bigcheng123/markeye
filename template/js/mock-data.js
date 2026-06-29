@@ -65,7 +65,14 @@ export function createIdleFrame() {
     idle: true,
     overall: { passed: null },
     frame: { width: 800, height: 500, process_ms: null },
-    marks: [],
+    marks: [
+      {
+        label: "mark_1",
+        bbox: [200, 140, 140, 80],
+        passed: null,
+        contour: [[200, 140], [340, 140], [340, 220], [200, 220]],
+      },
+    ],
     inspections: [
       { tool: "learn", name: "学习", passed: null, value: 73, threshold: TOOL_META.learn.threshold },
       { tool: "color", name: "彩色识别", passed: null, value: 0, threshold: TOOL_META.color.threshold },

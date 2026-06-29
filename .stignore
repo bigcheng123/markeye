@@ -1,0 +1,33 @@
+# Syncthing 忽略规则 — 不同步以下文件和目录
+
+# Python 虚拟环境
+.venv/
+venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 日志和输出
+*.log
+output/
+
+# Node
+node_modules/
+
+# 配置文件（本地专用）
+config.local.yaml
+
+# Syncthing 冲突文件（自动清理）
+*.sync-conflict-*
