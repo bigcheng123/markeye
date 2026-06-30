@@ -99,7 +99,8 @@ class MockApiClient {
       this.onFrame(createIdleFrame());
     }
     if (path === "/api/calibration/master") {
-      const img = captureMockMasterFromLive();
+      const slot = parseInt(body?.cam, 10) || 0;
+      captureMockMasterFromLive(slot);
       return { ok: true, calibration: { sample_count: getMockState().sampleCount } };
     }
     if (path === "/api/config/switch") {
@@ -220,7 +221,9 @@ class MockApiClient {
       };
     }
     if (path.startsWith("/api/calibration/master/image")) {
-      const img = getMockMasterImage();
+      const camMatch = path.match(/[?&]cam=(\d+)/);
+      const slot = camMatch ? parseInt(camMatch[1], 10) : 0;
+      const img = getMockMasterImage(slot);
       if (!img) throw new Error("404");
       return img;
     }

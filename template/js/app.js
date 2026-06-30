@@ -32,8 +32,11 @@ class MarkEyeApp {
     this.previewMode = "off";
     this.hasMasterRegistered = false;
     this.masterFrame = null;
+    this._masterFrames = {};
     this.livePreviewStarted = false;
     this._ignoreIdleUntil = 0;
+    this._continuousTrigger = false;
+    this._continuousTriggerTimer = null;
     this.api = null;
     this._mockCameras = [0, 1, 2];
     this._mockCameraId = 0;
@@ -54,7 +57,6 @@ class MarkEyeApp {
     this._bindModeTabs();
     this._bindGlobalActions();
     this._bindRunActions();
-    this._bindCameraSelect();
     this._bindKeyboard();
     this._bindToolPreview();
     initLayout();
@@ -73,19 +75,13 @@ class MarkEyeApp {
     this.imageViewer?.refreshOverlays?.();
   }
 
-  _isCameraSelectEnabled() {
-    return this.view === "run" || (this.view === "wizard" && this.previewMode === "live");
-  }
-
-  _updateCameraSelectDisabled() {
-    const sel = document.querySelector("#camera-select");
-    if (sel) sel.disabled = !this._isCameraSelectEnabled();
+  _setCameraNumberText(cameraId) {
+    const el = document.querySelector("#camera-select");
+    if (!el) return;
+    el.textContent = cameraId != null ? String(cameraId) : "0";
   }
 
   async syncCameraSelect(override = null) {
-    const sel = document.querySelector("#camera-select");
-    if (!sel) return;
-
     let cameras = [0, 1, 2];
     let cameraId = 0;
 
@@ -109,43 +105,7 @@ class MarkEyeApp {
 
     this._lastCameraList = cameras;
     this._applyPreviewCamForDevice(cameraId, cameras);
-
-    const prev = parseInt(sel.value, 10);
-    sel.innerHTML = cameras
-      .map((id) => `<option value="${id}">${id}</option>`)
-      .join("");
-    sel.value = String(cameraId);
-    this._updateCameraSelectDisabled();
-
-    if (prev !== cameraId && this._isCameraSelectEnabled() && !isMockMode()) {
-      await this.api?.pullCurrentFrame?.();
-    }
-  }
-
-  async _onCameraSelectChange(cameraId, { silent = false } = {}) {
-    if (!Number.isFinite(cameraId)) return;
-    this._applyPreviewCamForDevice(cameraId);
-    if (isMockMode()) {
-      this._mockCameraId = cameraId;
-      await this.syncCameraSelect({ cameras: this._mockCameras || [0, 1, 2], camera_id: cameraId });
-      return;
-    }
-    try {
-      await this.api?.post?.("/api/camera/select", { camera_id: cameraId });
-      await this.api?.pullCurrentFrame?.();
-      await this.syncCameraSelect();
-      if (!silent) showToast(`已切换至相机 ${cameraId}`, "ok");
-    } catch {
-      if (!silent) showToast("相机切换失败", "err");
-      await this.syncCameraSelect();
-    }
-  }
-
-  _bindCameraSelect() {
-    document.querySelector("#camera-select")?.addEventListener("change", (e) => {
-      const cameraId = parseInt(e.target.value, 10);
-      this._onCameraSelectChange(cameraId);
-    });
+    this._setCameraNumberText(cameraId);
   }
 
   start() {
@@ -153,7 +113,13 @@ class MarkEyeApp {
     this.api = new ApiClient({
       onFrame: (data) => this._onFrame(data),
       onConnectionChange: (connected) => {
-        showConnectionBanner(!connected && !isMockMode());
+        const needsLiveStream =
+          this.view === "run" ||
+          (this.view === "wizard" && this.livePreviewStarted);
+        showConnectionBanner(!connected && !isMockMode() && needsLiveStream);
+        if (!connected) {
+          this._stopContinuousTrigger();
+        }
         if (!connected && this.view === "run") {
           this.statusBar.setIdle();
           this.imageViewer.setWaiting(true);
@@ -239,12 +205,49 @@ class MarkEyeApp {
       return;
     }
     try {
-      const data = await this.api.get(`/api/tools/image?tool=${encodeURIComponent(tool)}`);
-      const slot = data?.cam != null ? data.cam : 0;
-      this.imageViewer?.setPreviewCamSlot?.(slot);
+      // 运行模式点击工具：主画面切换到该工具所属 CAM# 的整幅画面，同时同步相机号码下拉框
+      // 先取工具配置（cam/roi），再取对应 CAM# 的 live 全幅图像。
+      const info = await this.api.get(`/api/tools/image?tool=${encodeURIComponent(tool)}`);
+      const slot = info?.cam != null ? parseInt(info.cam, 10) : 0;
+      const camSlot = Number.isFinite(slot) ? Math.max(0, Math.min(1, slot)) : 0;
+
+      // 同步主视口叠加层过滤用的 cam slot
+      this.imageViewer?.setPreviewCamSlot?.(camSlot);
+
+      // 同步「相机号码」显示：该值是 device_id（来自 options 列表），与 cam slot 通过列表索引对应
+      if (Array.isArray(this._lastCameraList) && this._lastCameraList.length) {
+        const deviceId = this._lastCameraList[camSlot] ?? this._lastCameraList[0];
+        this._setCameraNumberText(deviceId);
+      } else {
+        this._setCameraNumberText(0);
+      }
+
+      const live = await this.api.get(`/api/cameras/live?cam=${camSlot}`);
+      const overlayRoi = info?.roi || null;
+
       this.imageViewer.clearVerdict?.();
-      this.imageViewer.updateFrame(this._buildMasterPayload(data, slot));
-      showToast(`已显示 Tool ${tool} 对应图像`, "ok");
+      this.imageViewer.updateFrame({
+        type: "frame",
+        timestamp: new Date().toISOString(),
+        idle: true,
+        overall: { passed: null },
+        preview_cam: camSlot,
+        frame: {
+          width: live.width,
+          height: live.height,
+          process_ms: null,
+          image_base64: live.image_base64,
+          binary_base64: live.binary_base64 || "",
+        },
+        // 在整幅画面上仍显示该工具的 ROI 位置（可选）
+        tool_rois: overlayRoi ? [{ cam: camSlot, roi: overlayRoi }] : [],
+        marks: [],
+        inspections: [],
+        stats: {},
+        calibration: {},
+        trigger: { source: "tool", label: `Tool ${tool}` },
+      });
+      showToast(`已切换至 Tool ${tool} 的相机画面`, "ok");
     } catch {
       showToast("工具图像获取失败", "err");
     }
@@ -272,7 +275,11 @@ class MarkEyeApp {
   _setView(view) {
     this.view = view;
     setAppView(view === "wizard" ? "wizard" : view === "set" ? "set" : "run");
-    updateModeTabIcons(view === "run" ? "run" : "settings");
+    updateModeTabIcons(view);
+
+    if (view !== "run") {
+      this._stopContinuousTrigger();
+    }
 
     if (view === "run") {
       this.wizard.hide();
@@ -289,16 +296,14 @@ class MarkEyeApp {
         this._onFrame(createIdleFrame());
       }
       this.syncCameraSelect();
-      this._updateCameraSelectDisabled();
     } else if (view === "set") {
       this.wizard.hide();
       this._stopWizardPreview();
       this._toolPreview = { active: false, tool: null };
-      this.api?.stop();
+      showConnectionBanner(false);
       this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
       this.syncCameraSelect();
-      this._updateCameraSelectDisabled();
     } else if (view === "wizard") {
       this.wizard.show();
       this.previewMode = "off";
@@ -308,7 +313,6 @@ class MarkEyeApp {
       this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
       this.syncCameraSelect();
-      this._updateCameraSelectDisabled();
     }
   }
 
@@ -322,6 +326,7 @@ class MarkEyeApp {
   _enterWizard() {
     this.hasMasterRegistered = false;
     this.masterFrame = null;
+    this._masterFrames = {};
     this.wizard.reloadForProfile(1);
     this._setView("wizard");
     showToast("进入传感器设定向导", "ok");
@@ -394,11 +399,17 @@ class MarkEyeApp {
     }
   }
 
+  getMasterFrame(cam = 0) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
+    return this._masterFrames?.[slot] ?? null;
+  }
+
   cacheMasterFrame(img, slot = 0) {
     if (!this._masterFrames) this._masterFrames = {};
     this._masterFrames[slot] = img;
     this.masterFrame = img;
-    this.hasMasterRegistered = true;
+    this.hasMasterRegistered = Object.values(this._masterFrames).some((f) => f?.image_base64);
+    this.wizard?.refreshStep2MasterThumbs?.();
   }
 
   _buildMasterPayload(img, camSlot = 0) {
@@ -441,7 +452,6 @@ class MarkEyeApp {
     this.previewMode = "live";
     this.statusBar.setWizardLive();
     this.imageViewer.setWaiting(false, { livePreview: true });
-    this._updateCameraSelectDisabled();
     await this.syncCameraSelect();
     showToast("Live 预览已启动", "ok");
   }
@@ -453,23 +463,70 @@ class MarkEyeApp {
       return;
     }
     try {
+      let img;
       if (isMockMode()) {
-        const img = captureMockMasterFromLive();
+        img = captureMockMasterFromLive(slot);
         registerMaster();
-        this.cacheMasterFrame(img, slot);
       } else {
-        await this.api.post("/api/calibration/master", { cam: slot });
-        const img = await this.api.get(`/api/calibration/master/image?cam=${slot}`);
-        this.cacheMasterFrame(img, slot);
+        const data = await this.api.get(`/api/cameras/live?cam=${slot}`);
+        if (!data?.image_base64) throw new Error("no live frame");
+        img = {
+          image_base64: data.image_base64,
+          width: data.width,
+          height: data.height,
+        };
       }
-      this.api?.stopLivePreview?.();
-      this.previewMode = "master";
-      this.imageViewer.updateFrame(this._buildMasterPayload(this.masterFrame));
-      this.statusBar.setWaiting();
+      this.cacheMasterFrame(img, slot);
       showToast(`已注册 CAM#${slot} Live 图像为主控`, "ok");
     } catch {
       showToast(`注册 CAM#${slot} 主控图像失败`, "err");
     }
+  }
+
+  async registerMasterFromFile(file, cam = 0) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
+    if (!file?.type?.startsWith("image/")) {
+      showToast("请选择图像文件", "err");
+      return;
+    }
+    try {
+      const img = await this._readImageFileAsMaster(file);
+      if (isMockMode()) {
+        const { setMockMasterImage } = await import("./mock-data.js");
+        setMockMasterImage(img, slot);
+        registerMaster();
+      }
+      this.cacheMasterFrame(img, slot);
+      showToast(`已从文件注册 CAM#${slot} 主控图像`, "ok");
+    } catch {
+      showToast(`注册 CAM#${slot} 主控图像失败`, "err");
+    }
+  }
+
+  _readImageFileAsMaster(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        if (typeof dataUrl !== "string") {
+          reject(new Error("read failed"));
+          return;
+        }
+        const image = new Image();
+        image.onload = () => {
+          const b64 = dataUrl.split(",")[1] || "";
+          resolve({
+            image_base64: b64,
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          });
+        };
+        image.onerror = () => reject(new Error("decode failed"));
+        image.src = dataUrl;
+      };
+      reader.onerror = () => reject(reader.error || new Error("read failed"));
+      reader.readAsDataURL(file);
+    });
   }
 
   async _completeWizard() {
@@ -500,6 +557,7 @@ class MarkEyeApp {
       const step = this.wizard.step;
       this.hasMasterRegistered = false;
       this.masterFrame = null;
+      this._masterFrames = {};
       this.wizard.reloadForProfile(step);
       await this._onWizardStepChange(step);
     } else if (this.view === "run" && isMockMode()) {
@@ -604,6 +662,10 @@ class MarkEyeApp {
       this._doTrigger();
     });
 
+    document.querySelector("#btn-continuous-trigger")?.addEventListener("click", () => {
+      this._toggleContinuousTrigger();
+    });
+
     document.querySelector("#btn-save-frame")?.addEventListener("click", () => {
       showToast("当前帧已保存（Mock）", "ok");
     });
@@ -639,24 +701,15 @@ class MarkEyeApp {
           const cameraId = row
             ? parseInt(row.querySelector('[data-field="camera-id"]')?.value, 10)
             : NaN;
-          if (Number.isFinite(cameraId)) {
-            await this._onCameraSelectChange(cameraId, { silent: true });
-          }
+          if (Number.isFinite(cameraId)) this._setCameraNumberText(cameraId);
           return this.startLivePreview();
         },
         "register-live": (e) => {
           const cam = parseInt(e.target.closest("[data-action]")?.dataset?.cam, 10);
           return this.registerLiveMaster(Number.isFinite(cam) ? cam : 0);
         },
-        "register-file": async () => {
-          if (isMockMode()) {
-            registerMaster();
-            const { captureMockMasterFromLive: cap } = await import("./mock-data.js");
-            this.cacheMasterFrame(cap());
-            showToast("已从文件注册主控（Mock）", "ok");
-          } else {
-            showToast("文件注册（Phase 2）", "ok");
-          }
+        "register-file": () => {
+          document.querySelector("#wizard-step2-file")?.click();
         },
         logic: () => showToast(`打开逻辑 ${e.target.dataset.n} 编辑器（Mock）`, "ok"),
       };
@@ -665,22 +718,71 @@ class MarkEyeApp {
     });
   }
 
-  async _doTrigger() {
+  async _doTrigger(options = {}) {
+    const { silent = false } = options;
     if (!this.api?._connected) {
-      showToast("请先连接传感器", "err");
+      if (!silent) showToast("请先连接传感器", "err");
+      else if (this._continuousTrigger) this._stopContinuousTrigger();
       return;
     }
     this._ignoreIdleUntil = performance.now() + 700;
     const frame = await this.api.trigger();
     if (frame) {
       // post() 已调用 onFrame；此处仅补 toast（避免重复处理）
-      if (!frame.idle && frame.overall?.passed != null) {
+      if (!silent && !frame.idle && frame.overall?.passed != null) {
         showToast(`触发完成 — ${frame.overall.passed ? "OK" : "NG"}`, frame.overall.passed ? "ok" : "err");
       }
-      if (!frame.idle && (!Array.isArray(frame.inspections) || frame.inspections.length === 0)) {
+      if (!silent && !frame.idle && (!Array.isArray(frame.inspections) || frame.inspections.length === 0)) {
         showToast("未收到工具判定结果：请确认 STEP3 已保存且 STEP2 已注册主控图像", "warn");
       }
     }
+    return frame;
+  }
+
+  _toggleContinuousTrigger() {
+    if (this._continuousTrigger) {
+      this._stopContinuousTrigger();
+      showToast("连续触发已停止", "ok");
+      return;
+    }
+    if (!this.api?._connected) {
+      showToast("请先连接传感器", "err");
+      return;
+    }
+    this._continuousTrigger = true;
+    this._updateContinuousTriggerButton();
+    showToast("连续触发已启动", "ok");
+    this._continuousTriggerStep();
+  }
+
+  _stopContinuousTrigger() {
+    if (!this._continuousTrigger && !this._continuousTriggerTimer) return;
+    this._continuousTrigger = false;
+    if (this._continuousTriggerTimer) {
+      clearTimeout(this._continuousTriggerTimer);
+      this._continuousTriggerTimer = null;
+    }
+    this._updateContinuousTriggerButton();
+  }
+
+  _updateContinuousTriggerButton() {
+    const btn = document.querySelector("#btn-continuous-trigger");
+    if (!btn) return;
+    btn.classList.toggle("is-active", this._continuousTrigger);
+    btn.setAttribute("aria-pressed", this._continuousTrigger ? "true" : "false");
+  }
+
+  async _continuousTriggerStep() {
+    if (!this._continuousTrigger) return;
+    try {
+      await this._doTrigger({ silent: true });
+    } catch {
+      this._stopContinuousTrigger();
+      showToast("连续触发已停止（触发失败）", "err");
+      return;
+    }
+    if (!this._continuousTrigger) return;
+    this._continuousTriggerTimer = setTimeout(() => this._continuousTriggerStep(), 50);
   }
 
   _bindKeyboard() {

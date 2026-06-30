@@ -2,6 +2,7 @@ input:
   cameras:
   - 0
   - 1
+  - 2
   camera_id: 0
   fallback_image: C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_tool_image_returns_roi_cr0\sample.jpg
   exposure: 50
@@ -20,7 +21,7 @@ preprocess:
   morph_iters: 1
 calibration:
   master_image: C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_trigger_dual_tools_overal0\cam0.jpg
-  sample_count: 53
+  sample_count: 54
   reference_center:
   - 140
   - 957
@@ -156,7 +157,7 @@ tools:
     - 180
     - 255
     - 255
-    match_area_max: 7000
+    match_area_max: 8000
     match_area_min: 4000
     h_sample:
     - 107

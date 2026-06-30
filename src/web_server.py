@@ -22,13 +22,14 @@ from .calibration import CalibrationService
 from .camera_config import available_camera_ids, camera_id_to_cam_slot, slot_device_ids
 from .camera_service import CameraService
 from .config_store import ConfigStore
-from .display_images import _hsv_hit_mask, has_active_tools
+from .display_images import _hsv_hit_mask, build_tool_binary_image, has_active_tools
 from .frame_codec import build_idle_frame, build_result_frame, encode_image_b64, maybe_save_result
 from .io.modbus_client import ModbusIOService
 from .pipeline import DetectionPipeline
 from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, run_roi_tools, sample_hsv_in_roi
 from .stats_store import StatsStore
 from .utils import json_safe, setup_logger
+from .version import get_app_meta
 
 logger = setup_logger()
 ROOT = Path(__file__).resolve().parent.parent
@@ -245,6 +246,7 @@ async def _preview_loop():
 async def health():
     inp = state.config_store.get_cached().get("input", {})
     cameras = available_camera_ids(state.config_store.get_cached())
+    cfg = state.config_store.get_cached()
     return {
         "status": "ok",
         "camera": state.camera.connected,
@@ -252,6 +254,7 @@ async def health():
         "cameras": state.camera.slot_status(),
         "available_cameras": cameras,
         "using_fallback": state.camera.using_fallback,
+        "app": get_app_meta(ROOT, base=float(cfg.get("app", {}).get("version_base", 0.0))),
     }
 
 
@@ -274,11 +277,13 @@ async def camera_options():
 @app.get("/api/device")
 async def device():
     hostname = socket.gethostname()
+    cfg = state.config_store.get_cached()
     return {
         "model": "MarkEye",
         "name": hostname,
         "ip": "127.0.0.1",
         "mac": "00:00:00:00:00:00",
+        "app": get_app_meta(ROOT, base=float(cfg.get("app", {}).get("version_base", 0.0))),
     }
 
 
@@ -502,16 +507,19 @@ async def camera_switch():
 
 @app.get("/api/cameras/live")
 async def get_camera_live(cam: int = 0):
-    from .frame_codec import encode_image_b64
-
     slot = max(0, min(1, int(cam)))
     frame = await asyncio.to_thread(state.camera.get_live_frame, slot)
     if frame is None:
         raise HTTPException(404, f"CAM#{slot} 无 Live 画面")
     h, w = frame.shape[:2]
-    quality = int(state.config_store.get_cached().get("output", {}).get("jpeg_quality", 70))
+    cfg = state.config_store.get_cached()
+    quality = int(cfg.get("output", {}).get("jpeg_quality", 70))
+    binary = build_tool_binary_image(frame, cfg, None)
+    if binary is not None and getattr(binary, "size", 0) != 0 and len(binary.shape) == 2:
+        binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
     return {
         "image_base64": encode_image_b64(frame, quality),
+        "binary_base64": encode_image_b64(binary, quality) if binary is not None else "",
         "width": w,
         "height": h,
         "cam": slot,

@@ -38,6 +38,34 @@ class CameraService:
         self._lock = threading.Lock()
         self._grab_stop = threading.Event()
         self._grab_thread: Optional[threading.Thread] = None
+        # 兼容旧测试/旧代码：曾直接使用 _connected/_latest_frame/_frame_seq（单路相机模型）
+        # 现在统一映射到 slot0 状态，通过 property 维持可读写行为。
+
+    @property
+    def _connected(self) -> bool:  # noqa: SLF001 - legacy compat
+        return self._slots[0].connected
+
+    @_connected.setter
+    def _connected(self, v: bool) -> None:  # noqa: SLF001 - legacy compat
+        self._slots[0].connected = bool(v)
+
+    @property
+    def _latest_frame(self) -> Optional[np.ndarray]:  # noqa: SLF001 - legacy compat
+        return self._slots[0].latest_frame
+
+    @_latest_frame.setter
+    def _latest_frame(self, frame: Optional[np.ndarray]) -> None:  # noqa: SLF001 - legacy compat
+        self._slots[0].latest_frame = frame
+        if frame is not None:
+            self._slots[0].last_frame = frame
+
+    @property
+    def _frame_seq(self) -> int:  # noqa: SLF001 - legacy compat
+        return self._slots[0].frame_seq
+
+    @_frame_seq.setter
+    def _frame_seq(self, n: int) -> None:  # noqa: SLF001 - legacy compat
+        self._slots[0].frame_seq = int(n or 0)
 
     @property
     def connected(self) -> bool:

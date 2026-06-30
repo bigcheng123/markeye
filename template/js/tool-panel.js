@@ -88,15 +88,22 @@ export class ToolPanel {
       const state = insp.passed === null ? "idle" : insp.passed ? "ok" : "ng";
       const selected = insp.tool === this.selectedTool ? " is-selected" : "";
       const val = insp.value ?? meta.threshold;
+      const statusBadge =
+        state === "ok"
+          ? '<span class="tool-card__status tool-card__status--ok">OK</span>'
+          : state === "ng"
+            ? '<span class="tool-card__status tool-card__status--ng">NG</span>'
+            : "";
 
       const card = document.createElement("article");
       card.className = `tool-card${selected}`;
       card.dataset.tool = insp.tool;
-      card.dataset.state = state === "idle" ? "ok" : state;
+      card.dataset.state = state;
       card.innerHTML = `
         <header class="tool-card__header">
           <span class="tool-card__id">${meta.id}</span>
           <span class="tool-card__name">${meta.name}</span>
+          ${statusBadge}
           <span class="tool-card__value">${val}</span>
         </header>
         <div class="tool-card__bar">

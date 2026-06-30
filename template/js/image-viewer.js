@@ -763,6 +763,10 @@ export class ImageViewer {
     // 空 idle 帧（如统计复位）不带图像字段，保留上一帧缓存避免黑屏
     if (nextOriginal) this._lastOriginalB64 = nextOriginal;
     if (nextBinary) this._lastBinaryB64 = nextBinary;
+    // 如果切换了画面但没有提供 binary_base64，清空二值化缓存避免串图
+    if (nextOriginal && nextOriginal !== prevOriginal && !nextBinary) {
+      this._lastBinaryB64 = "";
+    }
 
     const frameChanged =
       (nextOriginal && nextOriginal !== prevOriginal) ||

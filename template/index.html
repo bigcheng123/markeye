@@ -71,17 +71,6 @@
       </div>
     </header>
 
-    <!-- ── Wizard step nav (SET 向导时显示) ── -->
-    <nav id="wizard-step-nav" class="wizard-step-nav" hidden aria-label="设定向导步骤">
-      <button type="button" class="wizard-step is-active" data-step="1">1 拍摄条件</button>
-      <span class="wizard-step-arrow">›</span>
-      <button type="button" class="wizard-step" data-step="2">2 注册主控</button>
-      <span class="wizard-step-arrow">›</span>
-      <button type="button" class="wizard-step" data-step="3">3 工具设定</button>
-      <span class="wizard-step-arrow">›</span>
-      <button type="button" class="wizard-step" data-step="4">4 输出分配</button>
-    </nav>
-
     <!-- ── Main workspace ── -->
     <main id="region-main" class="main-body">
       <div id="region-left-col" class="left-col">
@@ -110,14 +99,18 @@
             <option value="binary">二值化</option>
           </select>
           <label class="toolbar-camera-label" for="camera-select">相机号码</label>
-          <select id="camera-select" class="select-process" aria-label="相机号码" disabled>
-            <option value="0">0</option>
-          </select>
+          <span id="camera-select" class="camera-number" aria-label="相机号码">0</span>
           <button type="button" id="btn-trigger" class="btn btn-toolbar-action" data-action="trigger">
             <span class="btn-trigger-icon">T</span> 触发
           </button>
+          <button type="button" id="btn-continuous-trigger" class="btn btn-toolbar-action" data-action="continuous-trigger" aria-pressed="false">
+            连续触发
+          </button>
           <button type="button" id="btn-save-frame" class="btn btn-toolbar-action" data-action="save-frame">
             保存
+          </button>
+          <button type="button" id="btn-fullscreen" class="btn btn-toolbar-action" data-action="fullscreen" aria-pressed="false" title="全屏显示">
+            全屏
           </button>
           <div id="verdict-badge" class="verdict-badge" hidden aria-live="polite">OK</div>
         </div>
@@ -194,8 +187,19 @@
         <p class="set-menu__hint">按步骤设定判断对象物所需的设定项目。</p>
       </aside>
 
-      <!-- SET: 向导右栏 -->
-      <div id="wizard-content" class="wizard-content" aria-label="向导配置"></div>
+      <!-- SET: 向导右栏（步骤条与主画面状态栏顶对齐） -->
+      <div id="wizard-right-col" class="wizard-right-col" hidden>
+        <nav id="wizard-step-nav" class="wizard-step-nav" hidden aria-label="设定向导步骤">
+          <button type="button" class="wizard-step is-active" data-step="1">1 拍摄条件</button>
+          <span class="wizard-step-arrow">›</span>
+          <button type="button" class="wizard-step" data-step="2">2 注册主控</button>
+          <span class="wizard-step-arrow">›</span>
+          <button type="button" class="wizard-step" data-step="3">3 工具设定</button>
+          <span class="wizard-step-arrow">›</span>
+          <button type="button" class="wizard-step" data-step="4">4 输出分配</button>
+        </nav>
+        <div id="wizard-content" class="wizard-content" aria-label="向导配置"></div>
+      </div>
     </main>
 
     <!-- SET: 向导底栏 -->

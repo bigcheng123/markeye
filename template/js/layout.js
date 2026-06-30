@@ -1,5 +1,22 @@
 /** 布局、弹窗、Toast */
 
+export function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen?.();
+  } else {
+    document.exitFullscreen?.();
+  }
+}
+
+function syncFullscreenButton() {
+  const btn = document.querySelector("#btn-fullscreen");
+  if (!btn) return;
+  const active = !!document.fullscreenElement;
+  btn.textContent = active ? "退出全屏" : "全屏";
+  btn.setAttribute("aria-pressed", active ? "true" : "false");
+  btn.title = active ? "退出全屏" : "全屏显示";
+}
+
 export function initLayout() {
   const app = document.querySelector("#app");
   if (!app) return;
@@ -23,14 +40,16 @@ export function initLayout() {
   window.addEventListener("resize", applyScale);
   applyScale();
 
+  document.querySelector("#btn-fullscreen")?.addEventListener("click", () => {
+    toggleFullscreen();
+  });
+  document.addEventListener("fullscreenchange", syncFullscreenButton);
+  syncFullscreenButton();
+
   document.addEventListener("keydown", (e) => {
     if (e.key === "F11") {
       e.preventDefault();
-      if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen?.();
-      } else {
-        document.exitFullscreen?.();
-      }
+      toggleFullscreen();
     }
   });
 }
@@ -121,9 +140,9 @@ export function setAppView(view) {
 export function updateModeTabIcons(mode) {
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     const isRun = tab.dataset.mode === "run";
-    const active =
-      (mode === "run" && isRun) ||
-      ((mode === "set" || mode === "wizard") && !isRun);
+    const active = isRun
+      ? mode === "run"
+      : mode === "set" || mode === "wizard" || mode === "settings";
     const img = tab.querySelector(".mode-icon");
     if (!img) return;
     if (isRun) {

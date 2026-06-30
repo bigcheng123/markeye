@@ -51,7 +51,7 @@ let _ngCount = 0;
 let _trerrCount = 0;
 let _sampleCount = 21;
 let _hasMaster = false;
-let _masterFrameB64 = null;
+const _masterFrames = {};
 let _masterWidth = 800;
 let _masterHeight = 500;
 let _liveTick = 0;
@@ -96,8 +96,20 @@ export function registerMaster() {
   _hasMaster = true;
 }
 
-export function hasMockMaster() {
-  return _hasMaster && Boolean(_masterFrameB64);
+export function hasMockMaster(slot = 0) {
+  const s = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
+  return Boolean(_masterFrames[s]?.image_base64);
+}
+
+export function setMockMasterImage(img, slot = 0) {
+  const s = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
+  if (!img?.image_base64) return;
+  _masterFrames[s] = {
+    image_base64: img.image_base64,
+    width: img.width || _masterWidth,
+    height: img.height || _masterHeight,
+  };
+  _hasMaster = Object.keys(_masterFrames).length > 0;
 }
 
 export function createLivePreviewFrame() {
@@ -126,32 +138,28 @@ export function createLivePreviewFrame() {
   return frame;
 }
 
-export function captureMockMasterFromLive() {
+export function captureMockMasterFromLive(slot = 0) {
+  const s = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
   const frame = createLivePreviewFrame();
-  _masterFrameB64 = frame.frame.image_base64;
-  _masterWidth = frame.frame.width;
-  _masterHeight = frame.frame.height;
-  registerMaster();
-  return {
-    image_base64: _masterFrameB64,
-    width: _masterWidth,
-    height: _masterHeight,
+  const img = {
+    image_base64: frame.frame.image_base64,
+    width: frame.frame.width,
+    height: frame.frame.height,
   };
+  setMockMasterImage(img, s);
+  registerMaster();
+  return img;
 }
 
-export function getMockMasterImage() {
-  if (!_masterFrameB64) return null;
-  return {
-    image_base64: _masterFrameB64,
-    width: _masterWidth,
-    height: _masterHeight,
-  };
+export function getMockMasterImage(slot = 0) {
+  const s = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
+  return _masterFrames[s] || null;
 }
 
 export function createMasterFramePayload(img) {
   const w = img?.width || _masterWidth;
   const h = img?.height || _masterHeight;
-  const b64 = img?.image_base64 || _masterFrameB64;
+  const b64 = img?.image_base64 || _masterFrames[0]?.image_base64;
   const imgs = b64 ? { original_base64: b64, binary_base64: _buildMockImages("original").binary_base64 } : _buildMockImages("original");
   return {
     type: "frame",

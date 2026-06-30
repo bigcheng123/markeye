@@ -334,6 +334,7 @@ export class Wizard {
     this.step = 1;
     this.tab = "output";
     this.contentEl = document.querySelector("#wizard-content");
+    this.rightCol = document.querySelector("#wizard-right-col");
     this.stepNav = document.querySelector("#wizard-step-nav");
     this.footer = document.querySelector("#wizard-footer");
     this.btnBack = document.querySelector("#wizard-back");
@@ -396,6 +397,7 @@ export class Wizard {
   }
 
   show() {
+    if (this.rightCol) this.rightCol.hidden = false;
     this.stepNav.hidden = false;
     this.footer.hidden = false;
     this.contentEl.hidden = false;
@@ -403,6 +405,7 @@ export class Wizard {
   }
 
   hide() {
+    if (this.rightCol) this.rightCol.hidden = true;
     this.stepNav.hidden = true;
     this.footer.hidden = true;
     this.contentEl.hidden = true;
@@ -444,8 +447,13 @@ export class Wizard {
 
     this._bindStepEvents();
     if (this.step === 1) this._hydrateStep1();
+    if (this.step === 2) this._hydrateStep2();
     if (this.step === 3) this._hydrateStep3();
     if (this.step === 4) this._hydrateStep4();
+  }
+
+  async _hydrateStep2() {
+    this.refreshStep2MasterThumbs();
   }
 
   async _hydrateStep1() {
@@ -539,6 +547,22 @@ export class Wizard {
     `;
   }
 
+  _step2MasterThumbHtml(cam) {
+    const img = window.__markeyeApp?.getMasterFrame?.(cam);
+    if (img?.image_base64) {
+      return `<img src="data:image/jpeg;base64,${img.image_base64}" alt="CAM#${cam} 已注册图像" />`;
+    }
+    return `<span class="wizard-master-thumb__placeholder">CAM#${cam} 已注册图像</span>`;
+  }
+
+  refreshStep2MasterThumbs() {
+    if (this.step !== 2) return;
+    [0, 1].forEach((cam) => {
+      const el = this.contentEl?.querySelector(`[data-master-thumb="${cam}"]`);
+      if (el) el.innerHTML = this._step2MasterThumbHtml(cam);
+    });
+  }
+
   _renderStep2(meta) {
     return `
       <div class="wizard-panel__title">
@@ -558,11 +582,18 @@ export class Wizard {
             <option value="1" ${this._previewCamSlot === 1 ? "selected" : ""}>CAM#1</option>
           </select>
         </div>
-        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;max-width:360px">
-          <button type="button" class="btn btn-primary" data-action="register-live" data-cam="0">注册 CAM#0 Live 图像</button>
-          <button type="button" class="btn btn-primary" data-action="register-live" data-cam="1">注册 CAM#1 Live 图像</button>
-          <button type="button" class="btn btn-secondary" data-action="register-file">注册文件的图像</button>
+        <div class="wizard-master-grid">
+          <div class="wizard-master-col">
+            <button type="button" class="btn btn-primary wizard-master-register-btn" data-action="register-live" data-cam="0">注册 CAM#0 Live 图像</button>
+            <div class="wizard-master-thumb" data-master-thumb="0">${this._step2MasterThumbHtml(0)}</div>
+          </div>
+          <div class="wizard-master-col">
+            <button type="button" class="btn btn-primary wizard-master-register-btn" data-action="register-live" data-cam="1">注册 CAM#1 Live 图像</button>
+            <div class="wizard-master-thumb" data-master-thumb="1">${this._step2MasterThumbHtml(1)}</div>
+          </div>
         </div>
+        <input type="file" id="wizard-step2-file" accept="image/*" hidden />
+        <button type="button" class="btn btn-secondary wizard-master-file-btn" data-action="register-file">注册文件的图像</button>
       </div>
       <div class="wizard-tab-panel" data-panel="ext"><p>扩展功能（Phase 2）</p></div>
     `;
@@ -702,6 +733,13 @@ export class Wizard {
         this._previewCamSlot = parseInt(e.target.value, 10) || 0;
         window.__markeyeApp?.imageViewer?.setPreviewCamSlot?.(this._previewCamSlot);
         await window.__markeyeApp?.showLivePreviewSlot?.(this._previewCamSlot);
+      });
+
+      this.contentEl?.querySelector("#wizard-step2-file")?.addEventListener("change", async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (!file) return;
+        await window.__markeyeApp?.registerMasterFromFile?.(file, this._previewCamSlot);
       });
     }
 

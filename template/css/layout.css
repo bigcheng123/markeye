@@ -24,7 +24,7 @@ body {
 }
 
 .app-root.view-wizard {
-  grid-template-rows: auto var(--wizard-nav-height) 1fr var(--wizard-footer-height) var(--device-status-height);
+  grid-template-rows: auto 1fr var(--wizard-footer-height) var(--device-status-height);
 }
 
 /* ── Header ── */
@@ -95,13 +95,28 @@ body {
   gap: var(--spacing-xs);
 }
 
-/* Wizard step nav */
+/* Wizard step nav — 与左侧 status-header 顶对齐 */
+.wizard-right-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+  border-left: 1px solid var(--color-border);
+}
+
+.wizard-right-col[hidden] {
+  display: none !important;
+}
+
 .wizard-step-nav {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--spacing-sm);
-  height: var(--wizard-nav-height);
+  height: var(--status-header-height);
+  flex-shrink: 0;
   padding: 0 var(--spacing-md);
   background: var(--color-bg-panel);
   border-bottom: 1px solid var(--color-border);
@@ -299,10 +314,10 @@ body {
 .wizard-content {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   background: #fff;
-  border-left: 1px solid var(--color-border);
 }
 
 .wizard-content[hidden] {
@@ -346,7 +361,7 @@ body {
 /* View visibility */
 .app-root.view-run #region-tools { display: flex; }
 .app-root.view-run #view-set-menu { display: none !important; }
-.app-root.view-run #wizard-content { display: none !important; }
+.app-root.view-run #wizard-right-col { display: none !important; }
 .app-root.view-run #region-run-footer { display: flex; }
 .app-root.view-run #wizard-step-nav { display: none !important; }
 .app-root.view-run #wizard-footer { display: none !important; }
@@ -354,7 +369,7 @@ body {
 
 .app-root.view-set #region-tools { display: none !important; }
 .app-root.view-set #view-set-menu { display: flex !important; }
-.app-root.view-set #wizard-content { display: none !important; }
+.app-root.view-set #wizard-right-col { display: none !important; }
 .app-root.view-set #region-run-footer { display: none; }
 .app-root.view-set #wizard-step-nav { display: none !important; }
 .app-root.view-set #wizard-footer { display: none !important; }
@@ -362,7 +377,7 @@ body {
 
 .app-root.view-wizard #region-tools { display: none !important; }
 .app-root.view-wizard #view-set-menu { display: none !important; }
-.app-root.view-wizard #wizard-content { display: flex !important; }
+.app-root.view-wizard #wizard-right-col { display: flex !important; }
 .app-root.view-wizard #region-run-footer { display: none; }
 .app-root.view-wizard #wizard-step-nav { display: flex !important; }
 .app-root.view-wizard #wizard-footer { display: flex !important; }
