@@ -21,6 +21,7 @@ export class ImageViewer {
     this.processMode = "overlay";
     this._lastMarks = [];
     this._lastToolRois = [];
+    this._previewCamSlot = 0;
     this._lastOriginalB64 = "";
     this._lastBinaryB64 = "";
     this._hasFrame = false;
@@ -732,7 +733,21 @@ export class ImageViewer {
     this._reuseImg.src = `data:image/jpeg;base64,${b64}`;
   }
 
+  setPreviewCamSlot(slot = 0) {
+    const n = parseInt(slot, 10);
+    this._previewCamSlot = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+  }
+
+  refreshOverlays() {
+    this._drawOverlays();
+    this._drawRoiOverlay();
+  }
+
   updateFrame(data) {
+    if (data.preview_cam != null) {
+      this.setPreviewCamSlot(data.preview_cam);
+    }
+
     const isDetectionResult = !data.idle && data.overall?.passed != null;
     if (isDetectionResult) {
       this._loadedCacheKey = "";
@@ -857,13 +872,20 @@ export class ImageViewer {
   _drawToolRois(toolRois) {
     if (!this._marksLayer || !toolRois?.length) return;
 
+    const camSlot = this._previewCamSlot ?? 0;
+    const filtered = toolRois.filter((item) => {
+      const itemCam = item.cam != null ? parseInt(item.cam, 10) : 0;
+      return (Number.isFinite(itemCam) ? itemCam : 0) === camSlot;
+    });
+    if (!filtered.length) return;
+
     const scaleX = this.imgWidth ? this.svg.clientWidth / this.imgWidth : 1;
     const scaleY = this.imgHeight ? this.svg.clientHeight / this.imgHeight : 1;
     const ns = "http://www.w3.org/2000/svg";
     const stroke = "#ff9900";
     const strokeW = 2;
 
-    for (const item of toolRois) {
+    for (const item of filtered) {
       const roi = item.roi;
       if (!roi) continue;
 

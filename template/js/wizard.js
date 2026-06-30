@@ -11,16 +11,103 @@ const STEP_TITLES = {
 };
 
 const DEFAULT_TOOL = () => ({
-  id: String(Date.now()).slice(-2),
   name: "色彩识别",
   type: "hsv_roi",
   enabled: true,
+  cam: 0,
   roi: { shape: "rect", x: 100, y: 100, w: 120, h: 80 },
   params: { h_lower: [0, 50, 50], h_upper: [180, 255, 255] },
 });
 
+const TOOL_KIND_OPTIONS = [
+  { name: "色彩识别", type: "hsv_roi" },
+  { name: "轮廓识别", type: "contour_roi" },
+];
+
+const DEFAULT_HSV_PARAMS = () => ({ h_lower: [0, 50, 50], h_upper: [180, 255, 255] });
+
+const DEFAULT_CONTOUR_PARAMS = () => ({
+  target_shape: "rect",
+  size_tolerance: 0.15,
+  position_tolerance: 10,
+  expected: { center: [350, 190], size: [120, 80] },
+});
+
+function _toolKindFromSel(sel) {
+  if (sel?.type === "contour_roi" || sel?.type === "hsv_roi") return sel.type;
+  const byName = TOOL_KIND_OPTIONS.find((o) => o.name === sel?.name);
+  return byName?.type || "hsv_roi";
+}
+
+function _toolNameFromKind(kind) {
+  return TOOL_KIND_OPTIONS.find((o) => o.type === kind)?.name || "色彩识别";
+}
+
+/** 按列表顺序生成工具 ID：第 1 个 → "01"，第 2 个 → "02" … */
+function _formatToolId(index) {
+  return String(index + 1).padStart(2, "0");
+}
+
+/** 解析工具绑定的逻辑相机槽位 CAM#0 / CAM#1 */
+function _toolCamSlot(tool) {
+  const n = parseInt(tool?.cam, 10);
+  return Number.isFinite(n) && n >= 0 ? Math.min(1, n) : 0;
+}
+
+const DEFAULT_CAMERAS_LIST = () => [0, 1, 2];
+
+function _readCamerasListFromForm(el) {
+  const inputs = el?.querySelectorAll('[data-field="camera-id"]') || [];
+  const ids = [...inputs]
+    .map((inp) => parseInt(inp.value, 10))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+  const unique = [...new Set(ids)].sort((a, b) => a - b);
+  return unique.length ? unique : [0];
+}
+
+function _renderCameraListRows(cameras) {
+  return cameras
+    .map(
+      (id, i) => `
+        <div class="wizard-camera-row" data-camera-index="${i}">
+          <input type="number" min="0" step="1" data-field="camera-id" value="${id}" aria-label="相机设备号 ${i}" />
+          <button type="button" class="btn btn-secondary btn-camera-row-del" data-action="camera-remove"
+            ${cameras.length <= 1 ? "disabled" : ""} title="删除">−</button>
+          <button type="button" class="btn btn-primary btn-ai-shoot-row" data-action="ai-shoot" title="拍摄">✨ 拍摄</button>
+        </div>`,
+    )
+    .join("");
+}
+
+function _refreshDefaultCameraSelect(el, cameras, selected) {
+  const sel = el?.querySelector('[data-field="camera-default"]');
+  if (!sel) return;
+  const cur = Number.isFinite(selected) ? selected : parseInt(sel.value, 10);
+  const pick = cameras.includes(cur) ? cur : cameras[0];
+  sel.innerHTML = cameras
+    .map((id) => `<option value="${id}" ${id === pick ? "selected" : ""}>${id}</option>`)
+    .join("");
+}
+
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
+}
+
+function _editorFieldKey(el) {
+  if (!el?.dataset) return null;
+  if (el.dataset.toolField) return `tool:${el.dataset.toolField}`;
+  if (el.dataset.roiField) return `roi:${el.dataset.roiField}`;
+  if (el.dataset.paramField) return `param:${el.dataset.paramField}`;
+  return null;
+}
+
+function _focusEditorField(editorEl, key) {
+  if (!editorEl || !key) return;
+  const [kind, name] = key.split(":");
+  const attr = kind === "tool" ? "data-tool-field"
+    : kind === "roi" ? "data-roi-field"
+      : "data-param-field";
+  editorEl.querySelector(`[${attr}="${name}"]`)?.focus?.();
 }
 
 /** ROI 几何像素面积（矩形 w×h，圆形 πr²）— 用于面积上下限输入框的 max */
@@ -81,6 +168,55 @@ function _hsvSampleDisplay(params, channel) {
   return "—";
 }
 
+/** OpenCV HSV (H 0–180, S/V 0–255) → RGB 0–255 */
+function _hsvOpenCvToRgb(h, s, v) {
+  const hd = (Number(h) || 0) * 2;
+  const sd = (Number(s) || 0) / 255;
+  const vd = (Number(v) || 0) / 255;
+  const c = vd * sd;
+  const x = c * (1 - Math.abs(((hd / 60) % 2) - 1));
+  const m = vd - c;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hd < 60) {
+    r = c; g = x; b = 0;
+  } else if (hd < 120) {
+    r = x; g = c; b = 0;
+  } else if (hd < 180) {
+    r = 0; g = c; b = x;
+  } else if (hd < 240) {
+    r = 0; g = x; b = c;
+  } else if (hd < 300) {
+    r = x; g = 0; b = c;
+  } else {
+    r = c; g = 0; b = x;
+  }
+  return {
+    r: Math.round((r + m) * 255),
+    g: Math.round((g + m) * 255),
+    b: Math.round((b + m) * 255),
+  };
+}
+
+function _hsvSampleTextColor(params) {
+  const sample = params?.h_sample;
+  if (!Array.isArray(sample) || sample.length < 3) return "";
+  const [h, s, v] = sample.map((n) => Number(n));
+  if ([h, s, v].some((n) => Number.isNaN(n))) return "";
+  const { r, g, b } = _hsvOpenCvToRgb(h, s, v);
+  return `color: rgb(${r}, ${g}, ${b});`;
+}
+
+function _sanitizeHsvParams(params) {
+  if (!params || typeof params !== "object") return params;
+  const allowed = new Set(["h_lower", "h_upper", "match_area_min", "match_area_max", "h_sample"]);
+  for (const k of Object.keys(params)) {
+    if (!allowed.has(k)) delete params[k];
+  }
+  return params;
+}
+
 function _renderHsvThresholdGrid(params, areaResult = null, { hsvPickActive = false, hsvMatchActive = false, roiAreaMax = 0 } = {}) {
   const hLower = params.h_lower || [0, 0, 0];
   const hUpper = params.h_upper || [180, 255, 255];
@@ -88,13 +224,16 @@ function _renderHsvThresholdGrid(params, areaResult = null, { hsvPickActive = fa
   const areaMax = params.match_area_max ?? "";
   const areaLimit = Math.max(0, roiAreaMax);
 
+  const sampleColorStyle = _hsvSampleTextColor(params);
+  const sampleStyleAttr = sampleColorStyle ? ` style="${sampleColorStyle}"` : "";
+
   const hsvCoreCells = (label, i) => {
     const lim = HSV_LIMITS[i];
     const sample = _hsvSampleDisplay(params, i);
     return `
         <th class="wizard-hsv-grid__axis">${label}</th>
         <td><input type="number" data-param-field="h_lower_${i}" value="${hLower[i] ?? 0}" min="${lim.min}" max="${lim.max}" aria-label="${label} 下限值" /></td>
-        <td><span class="wizard-hsv-grid__sample" data-hsv-sample="${i}" aria-label="${label} 取样值">${sample}</span></td>
+        <td><span class="wizard-hsv-grid__sample" data-hsv-sample="${i}" aria-label="${label} 取样值"${sampleStyleAttr}>${sample}</span></td>
         <td><input type="number" data-param-field="h_upper_${i}" value="${hUpper[i] ?? lim.max}" min="${lim.min}" max="${lim.max}" aria-label="${label} 上限值" /></td>`;
   };
 
@@ -147,6 +286,11 @@ function _renderHsvThresholdGrid(params, areaResult = null, { hsvPickActive = fa
 }
 
 function _renderToolParamsTwoColumn(sel, roi, roiRect) {
+  const toolKind = _toolKindFromSel(sel);
+  const camSlot = _toolCamSlot(sel);
+  const toolOptions = TOOL_KIND_OPTIONS.map(
+    (o) => `<option value="${o.type}" ${toolKind === o.type ? "selected" : ""}>${o.name}</option>`,
+  ).join("");
   return `
     <p class="wizard-hint wizard-tool-params__hint">拖拽四角调整 ROI，拖内部移动；空白处拖拽可新建 ROI。</p>
     <div class="wizard-tool-params-grid">
@@ -157,13 +301,14 @@ function _renderToolParamsTwoColumn(sel, roi, roiRect) {
             <option value="false" ${sel.enabled === false ? "selected" : ""}>OFF</option>
           </select>
         </div>
-        <div class="wizard-form-row"><label>ID</label><input data-tool-field="id" value="${sel.id || ""}" /></div>
-        <div class="wizard-form-row"><label>名称</label><input data-tool-field="name" value="${sel.name || ""}" /></div>
-        <div class="wizard-form-row"><label>类型</label>
-          <select data-tool-field="type">
-            <option value="hsv_roi" ${sel.type === "hsv_roi" ? "selected" : ""}>色彩识别（HSV）</option>
-            <option value="contour_roi" ${sel.type === "contour_roi" ? "selected" : ""}>轮廓识别</option>
+        <div class="wizard-form-row"><label>CAM#</label>
+          <select data-tool-field="cam">
+            <option value="0" ${camSlot === 0 ? "selected" : ""}>CAM#0</option>
+            <option value="1" ${camSlot === 1 ? "selected" : ""}>CAM#1</option>
           </select>
+        </div>
+        <div class="wizard-form-row"><label>选择工具</label>
+          <select data-tool-field="tool_kind">${toolOptions}</select>
         </div>
         <div class="wizard-form-row"><label>ROI 形状</label>
           <select data-roi-field="shape">
@@ -206,6 +351,10 @@ export class Wizard {
     this._hsvAreaResults = {};
     this._hsvPickActive = false;
     this._hsvMatchPreviewActive = false;
+    this._previewCamSlot = 0;
+    this._step4Loaded = false;
+    this._comprehensiveLogic = 1;
+    this._trerrEnabled = true;
 
     this._bindNav();
     this._render();
@@ -224,10 +373,6 @@ export class Wizard {
     });
 
     this.btnNext?.addEventListener("click", async () => {
-      if (this.step === 2 && !this.hasMaster?.()) {
-        showToast("请先注册 Live 图像为主控", "err");
-        return;
-      }
       await this._saveCurrentStep();
       if (this.step < 4) this.goToStep(this.step + 1);
       else this.onComplete?.();
@@ -237,6 +382,9 @@ export class Wizard {
   }
 
   goToStep(step) {
+    if (this.step === 3 && step !== 3) {
+      this._readToolEditor();
+    }
     if (step !== 3 && this._hsvMatchPreviewActive) {
       this._clearHsvMatchPreview();
     }
@@ -265,6 +413,7 @@ export class Wizard {
     this._tools = [];
     this._step1Loaded = false;
     this._step3Loaded = false;
+    this._step4Loaded = false;
     this._selectedToolId = null;
     this._hsvAreaResults = {};
     this._hsvPickActive = false;
@@ -296,6 +445,7 @@ export class Wizard {
     this._bindStepEvents();
     if (this.step === 1) this._hydrateStep1();
     if (this.step === 3) this._hydrateStep3();
+    if (this.step === 4) this._hydrateStep4();
   }
 
   async _hydrateStep1() {
@@ -320,6 +470,16 @@ export class Wizard {
       const gainEl = this.contentEl?.querySelector('[data-field="gain"]');
       if (gainEl && gain != null) gainEl.value = String(gain);
 
+      const cameras = Array.isArray(data?.input?.cameras) && data.input.cameras.length
+        ? [...new Set(data.input.cameras.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b)
+        : data?.input?.camera_id != null
+          ? [parseInt(data.input.camera_id, 10) || 0]
+          : DEFAULT_CAMERAS_LIST();
+      const listEl = this.contentEl?.querySelector("#wizard-camera-list");
+      if (listEl) listEl.innerHTML = _renderCameraListRows(cameras.length ? cameras : DEFAULT_CAMERAS_LIST());
+      const defaultId = data?.input?.camera_id != null ? parseInt(data.input.camera_id, 10) : cameras[0];
+      _refreshDefaultCameraSelect(this.contentEl, cameras.length ? cameras : DEFAULT_CAMERAS_LIST(), defaultId);
+
       this._step1Loaded = true;
     } catch {
       this._step1Loaded = true;
@@ -334,14 +494,7 @@ export class Wizard {
       </div>
       <div class="wizard-accordion">
         <div class="wizard-accordion__item is-open">
-          <button type="button" class="wizard-accordion__head is-active" data-acc="ai">AI拍摄</button>
-          <div class="wizard-accordion__body">
-            <p>生成 AI 拍摄推荐的拍摄条件。按下「AI拍摄」按钮开始处理。</p>
-            <button type="button" class="btn btn-primary btn-ai-shoot" data-action="ai-shoot">✨ AI拍摄</button>
-          </div>
-        </div>
-        <div class="wizard-accordion__item">
-          <button type="button" class="wizard-accordion__head" data-acc="trigger">
+          <button type="button" class="wizard-accordion__head is-active" data-acc="trigger">
             触发条件 <span class="wizard-accordion__hint">外部触发、延迟0ms</span>
           </button>
           <div class="wizard-accordion__body">
@@ -355,6 +508,19 @@ export class Wizard {
             <div class="wizard-form-row">
               <label>延迟 (ms)</label>
               <input type="number" value="0" min="0" max="10000" data-field="trigger-delay" />
+            </div>
+            <div class="wizard-form-row wizard-form-row--stack">
+              <label>相机号码</label>
+              <div id="wizard-camera-list" class="wizard-camera-list">
+                ${_renderCameraListRows(DEFAULT_CAMERAS_LIST())}
+              </div>
+              <button type="button" class="btn btn-secondary btn-camera-add" data-action="camera-add">＋ 追加相机</button>
+            </div>
+            <div class="wizard-form-row">
+              <label>默认相机</label>
+              <select data-field="camera-default" aria-label="默认相机">
+                <option value="0" selected>0</option>
+              </select>
             </div>
           </div>
         </div>
@@ -384,9 +550,17 @@ export class Wizard {
         <button type="button" class="wizard-tab" data-tab="ext">扩展功能</button>
       </div>
       <div class="wizard-tab-panel is-active" data-panel="master">
-        <p>将当前 Live 画面注册为主控图像，供 STEP3 工具设定使用。</p>
-        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;max-width:320px">
-          <button type="button" class="btn btn-primary" data-action="register-live">注册 Live 图像</button>
+        <p>将各通道 Live 画面分别注册为主控图像，供 STEP3 工具设定使用。</p>
+        <div class="wizard-form-row" style="margin-top:12px">
+          <label>预览通道</label>
+          <select id="wizard-step2-preview-cam">
+            <option value="0" ${this._previewCamSlot === 0 ? "selected" : ""}>CAM#0</option>
+            <option value="1" ${this._previewCamSlot === 1 ? "selected" : ""}>CAM#1</option>
+          </select>
+        </div>
+        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;max-width:360px">
+          <button type="button" class="btn btn-primary" data-action="register-live" data-cam="0">注册 CAM#0 Live 图像</button>
+          <button type="button" class="btn btn-primary" data-action="register-live" data-cam="1">注册 CAM#1 Live 图像</button>
           <button type="button" class="btn btn-secondary" data-action="register-file">注册文件的图像</button>
         </div>
       </div>
@@ -405,6 +579,7 @@ export class Wizard {
         <button type="button" class="btn btn-secondary" data-action="tool-edit">✎ 编辑</button>
         <button type="button" class="btn btn-secondary" data-action="tool-copy">⧉ 复制</button>
         <button type="button" class="btn btn-secondary btn-danger" data-action="tool-delete">✕ 删除</button>
+        <button type="button" class="btn btn-secondary wizard-tool-save-btn" data-action="tool-save">💾 保存参数</button>
       </div>
       <div class="wizard-tool-list" id="wizard-tool-list"></div>
       <div class="wizard-tool-editor" id="wizard-tool-editor" style="margin-top:12px"></div>
@@ -412,6 +587,10 @@ export class Wizard {
   }
 
   _renderStep4(meta) {
+    const logic = this._comprehensiveLogic ?? 1;
+    const trerrOn = this._trerrEnabled !== false;
+    const logicBtnClass = (n) =>
+      `btn btn-secondary${logic === n ? " is-active" : ""}`;
     return `
       <div class="wizard-panel__title">
         <h3>${meta.title}</h3>
@@ -433,19 +612,24 @@ export class Wizard {
         <div class="wizard-form-row"><label>I/O3</label><select><option>OFF</option></select></div>
         <div class="wizard-form-row"><label>触发错误</label>
           <div class="toggle-group" data-toggle="trerr">
-            <button type="button" class="is-active" data-val="on">有效</button>
-            <button type="button" data-val="off">无效</button>
+            <button type="button" class="${trerrOn ? "is-active" : ""}" data-val="on">有效</button>
+            <button type="button" class="${!trerrOn ? "is-active" : ""}" data-val="off">无效</button>
           </div>
         </div>
       </div>
       <div class="wizard-tab-panel ${this.tab === "logic" ? "is-active" : ""}" data-panel="logic">
-        <div class="wizard-form-row"><label>综合判断条件</label><select><option>全部OK</option><option>任一NG</option></select></div>
+        <div class="wizard-form-row"><label>综合判断条件</label>
+          <select data-field="comprehensive-condition">
+            <option value="1" ${logic === 1 ? "selected" : ""}>全部OK</option>
+            <option value="2" ${logic === 2 ? "selected" : ""}>任一NG</option>
+          </select>
+        </div>
         <p>定义逻辑判断条件：</p>
         <div class="wizard-logic-btns">
-          <button type="button" class="btn btn-secondary" data-action="logic" data-n="1">逻辑 1</button>
-          <button type="button" class="btn btn-secondary" data-action="logic" data-n="2">逻辑 2</button>
-          <button type="button" class="btn btn-secondary" data-action="logic" data-n="3">逻辑 3</button>
-          <button type="button" class="btn btn-secondary" data-action="logic" data-n="4">逻辑 4</button>
+          <button type="button" class="${logicBtnClass(1)}" data-action="logic" data-n="1">逻辑 1</button>
+          <button type="button" class="${logicBtnClass(2)}" data-action="logic" data-n="2">逻辑 2</button>
+          <button type="button" class="${logicBtnClass(3)}" data-action="logic" data-n="3">逻辑 3</button>
+          <button type="button" class="${logicBtnClass(4)}" data-action="logic" data-n="4">逻辑 4</button>
         </div>
       </div>
       <div class="wizard-tab-panel ${this.tab === "autoswitch" ? "is-active" : ""}" data-panel="autoswitch">
@@ -498,26 +682,72 @@ export class Wizard {
       });
     });
 
+    if (this.step === 1) {
+      this.contentEl?.querySelector('[data-action="camera-add"]')?.addEventListener("click", () => {
+        const listEl = this.contentEl?.querySelector("#wizard-camera-list");
+        if (!listEl) return;
+        const cameras = _readCamerasListFromForm(this.contentEl);
+        const next = cameras.length ? Math.max(...cameras) + 1 : 0;
+        cameras.push(next);
+        listEl.innerHTML = _renderCameraListRows(cameras);
+        _refreshDefaultCameraSelect(this.contentEl, cameras);
+        this._bindStep1CameraEvents();
+      });
+
+      this._bindStep1CameraEvents();
+    }
+
+    if (this.step === 2) {
+      this.contentEl?.querySelector("#wizard-step2-preview-cam")?.addEventListener("change", async (e) => {
+        this._previewCamSlot = parseInt(e.target.value, 10) || 0;
+        window.__markeyeApp?.imageViewer?.setPreviewCamSlot?.(this._previewCamSlot);
+        await window.__markeyeApp?.showLivePreviewSlot?.(this._previewCamSlot);
+      });
+    }
+
+    if (this.step === 4) {
+      this.contentEl?.querySelector('[data-field="comprehensive-condition"]')?.addEventListener("change", (e) => {
+        const n = parseInt(e.target.value, 10);
+        if (Number.isFinite(n)) {
+          this._comprehensiveLogic = n;
+          this._render();
+        }
+      });
+      this.contentEl?.querySelectorAll('[data-action="logic"]').forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const n = parseInt(btn.dataset.n, 10);
+          if (Number.isFinite(n)) {
+            this._comprehensiveLogic = n;
+            this._render();
+          }
+        });
+      });
+    }
+
     // STEP3 tools
     if (this.step === 3) {
       this.contentEl?.querySelector('[data-action="tool-add"]')?.addEventListener("click", () => {
+        this._readToolEditor();
         this._tools = [...this._tools, DEFAULT_TOOL()];
+        this._renumberToolIds();
         this._selectedToolId = this._tools.at(-1)?.id || null;
-        this._renderStep3ListAndEditor();
+        this._renderStep3ListAndEditor({ skipEditorFlush: true });
         const added = this._tools.find((t) => t.id === this._selectedToolId);
         if (added) this._enableRoiForTool(added);
         showToast("已追加工具", "ok");
       });
 
       this.contentEl?.querySelector('[data-action="tool-copy"]')?.addEventListener("click", () => {
+        this._readToolEditor();
         const src = this._tools.find((t) => t.id === this._selectedToolId);
         if (!src) return;
         const copy = structuredClone(src);
-        copy.id = String(Date.now()).slice(-2);
+        delete copy.id;
         copy.name = `${copy.name || "工具"}_copy`;
         this._tools = [...this._tools, copy];
-        this._selectedToolId = copy.id;
-        this._renderStep3ListAndEditor();
+        this._renumberToolIds();
+        this._selectedToolId = this._tools.at(-1)?.id || null;
+        this._renderStep3ListAndEditor({ skipEditorFlush: true });
         showToast("已复制工具", "ok");
       });
 
@@ -526,9 +756,11 @@ export class Wizard {
         if (!src) return;
         const ok = await confirmModal(`确定要删除工具 ${src.id}: ${src.name} 吗？`);
         if (!ok) return;
+        this._readToolEditor();
         this._tools = this._tools.filter((t) => t.id !== src.id);
+        this._renumberToolIds();
         this._selectedToolId = this._tools[0]?.id || null;
-        this._renderStep3ListAndEditor();
+        this._renderStep3ListAndEditor({ skipEditorFlush: true });
         showToast("已删除工具", "warn");
       });
 
@@ -538,25 +770,60 @@ export class Wizard {
         this._enableRoiForTool(src);
       });
 
-      this.contentEl?.querySelector("#wizard-tool-list")?.addEventListener("click", (e) => {
-        const card = e.target.closest(".tool-card");
-        if (!card) return;
-        if (this._hsvMatchPreviewActive) this._clearHsvMatchPreview();
-        this._selectedToolId = card.dataset.id;
-        this._hsvPickActive = false;
+      this.contentEl?.querySelector('[data-action="tool-save"]')?.addEventListener("click", async () => {
+        const ok = await this._saveCurrentStep({ silent: false });
+        if (!ok) return;
+        // 回读一次后端持久化结果，避免“看似保存成功但配置未落盘”的错觉
+        try {
+          const data = await window.__markeyeApp?.api?.get?.("/api/wizard/step/3");
+          if (Array.isArray(data?.tools)) this._tools = data.tools;
+        } catch {
+          /* ignore */
+        }
+        this._renumberToolIds();
         this._renderStep3ListAndEditor();
         const sel = this._tools.find((t) => t.id === this._selectedToolId);
         if (sel) this._enableRoiForTool(sel);
+        showToast(`STEP3 工具已保存：${this._tools.filter((t) => t?.enabled !== false).length} 个启用`, "ok");
       });
 
-      this.contentEl?.querySelector("#wizard-tool-editor")?.addEventListener("input", (e) => {
+      this.contentEl?.querySelector("#wizard-tool-list")?.addEventListener("click", (e) => {
+        const card = e.target.closest(".tool-card");
+        if (!card) return;
+        if (card.dataset.id === this._selectedToolId) return;
+        if (this._hsvMatchPreviewActive) this._clearHsvMatchPreview();
+        this._switchSelectedTool(card.dataset.id);
+        const sel = this._tools.find((t) => t.id === this._selectedToolId);
+        if (sel) {
+          const slot = _toolCamSlot(sel);
+          window.__markeyeApp?.imageViewer?.setPreviewCamSlot?.(slot);
+          window.__markeyeApp?.showLivePreviewSlot?.(slot).then(() => {
+            this._enableRoiForTool(sel);
+          });
+        }
+      });
+
+      this.contentEl?.querySelector("#wizard-tool-editor")?.addEventListener("change", async (e) => {
+        if (!e.target.matches("[data-tool-field], [data-roi-field], [data-param-field]")) return;
+        const editorEl = e.currentTarget;
+        const refocusKey = editorEl.contains(document.activeElement)
+          ? _editorFieldKey(document.activeElement)
+          : null;
+        const camChanged = e.target.matches('[data-tool-field="cam"]');
         if (e.target.matches("[data-roi-field]") && this._selectedToolId) {
           delete this._hsvAreaResults[this._selectedToolId];
         }
         this._readToolEditor();
-        this._renderStep3ListAndEditor({ keepEditorFocus: true });
+        this._renderStep3ListAndEditor();
+        if (refocusKey) _focusEditorField(editorEl, refocusKey);
         const sel = this._tools.find((t) => t.id === this._selectedToolId);
+        if (camChanged && sel) {
+          const slot = _toolCamSlot(sel);
+          window.__markeyeApp?.imageViewer?.setPreviewCamSlot?.(slot);
+          await window.__markeyeApp?.showLivePreviewSlot?.(slot);
+        }
         if (sel?.roi) window.__markeyeApp?.imageViewer?.updateRoiEditor?.(sel.roi);
+        if (sel && !camChanged) this._enableRoiForTool(sel);
         if (this._hsvMatchPreviewActive) {
           const idx = this._tools.findIndex((t) => t.id === this._selectedToolId);
           if (idx >= 0) this._refreshHsvMatchPreview(idx);
@@ -648,16 +915,18 @@ export class Wizard {
       try {
         const res = await window.__markeyeApp?.api?.post?.("/api/tools/hsv-sample-roi", {
           roi: tool.roi,
+          cam: _toolCamSlot(tool),
+          prefer_live: true,
         });
         hsv = res?.hsv;
       } catch {
-        showToast("ROI 取样失败，请确认已注册主控图像", "err");
+        showToast("ROI 取样失败，请确认实时画面可用（相机已连接）", "err");
         return;
       }
     } else {
       const viewer = window.__markeyeApp?.imageViewer;
       if (!viewer?._hasFrame) {
-        showToast("请先加载主控图像", "err");
+        showToast("请先加载实时图像", "err");
         return;
       }
       hsv = viewer.sampleHsvFromRoi({ roi: tool.roi });
@@ -692,15 +961,17 @@ export class Wizard {
           roi: tool.roi,
           h_lower: hLower,
           h_upper: hUpper,
+          cam: _toolCamSlot(tool),
+          prefer_live: true,
         });
       } catch {
-        showToast("面积计算失败，请确认已注册主控图像", "err");
+        showToast("面积计算失败，请确认实时画面可用（相机已连接）", "err");
         return;
       }
     } else {
       const viewer = window.__markeyeApp?.imageViewer;
       if (!viewer?._hasFrame) {
-        showToast("请先加载主控图像", "err");
+        showToast("请先加载实时图像", "err");
         return;
       }
       result = viewer.computeHsvAreaInRoi({ roi: tool.roi, hLower, hUpper });
@@ -754,6 +1025,8 @@ export class Wizard {
           roi: tool.roi,
           h_lower: hLower,
           h_upper: hUpper,
+          cam: _toolCamSlot(tool),
+          prefer_live: true,
         });
         if (!res?.image_base64) throw new Error("no preview");
         await new Promise((resolve, reject) => {
@@ -790,7 +1063,7 @@ export class Wizard {
     }
 
     if (!viewer?._hasFrame) {
-      showToast("请先加载主控图像", "err");
+      showToast("请先加载实时图像", "err");
       return;
     }
 
@@ -805,8 +1078,17 @@ export class Wizard {
     if (sel) {
       this._selectedToolId = sel.id;
       this._renderStep3ListAndEditor();
-      this._enableRoiForTool(sel);
+      const slot = _toolCamSlot(sel);
+      window.__markeyeApp?.imageViewer?.setPreviewCamSlot?.(slot);
+      window.__markeyeApp?.showLivePreviewSlot?.(slot).then(() => {
+        this._enableRoiForTool(sel);
+      });
     }
+  }
+
+  getSelectedToolCam() {
+    const sel = this._tools.find((t) => t.id === this._selectedToolId) || this._tools[0];
+    return sel ? _toolCamSlot(sel) : 0;
   }
 
   _syncRoiFields(roi) {
@@ -846,10 +1128,11 @@ export class Wizard {
     if (isMockMode()) {
       if (!this._tools.length) {
         this._tools = [
-          { id: "01", name: "色彩识别", type: "hsv_roi", enabled: true, roi: { shape: "rect", x: 100, y: 100, w: 120, h: 80 }, params: { h_lower: [0, 50, 50], h_upper: [180, 255, 255] } },
-          { id: "02", name: "轮廓识别", type: "contour_roi", enabled: true, roi: { shape: "rect", x: 260, y: 120, w: 180, h: 140 }, params: { target_shape: "rect", size_tolerance: 0.15, position_tolerance: 10, expected: { center: [350, 190], size: [120, 80] } } },
+          { name: "色彩识别", type: "hsv_roi", enabled: true, roi: { shape: "rect", x: 100, y: 100, w: 120, h: 80 }, params: { h_lower: [0, 50, 50], h_upper: [180, 255, 255] } },
+          { name: "轮廓识别", type: "contour_roi", enabled: true, roi: { shape: "rect", x: 260, y: 120, w: 180, h: 140 }, params: { target_shape: "rect", size_tolerance: 0.15, position_tolerance: 10, expected: { center: [350, 190], size: [120, 80] } } },
         ];
       }
+      this._renumberToolIds();
       this._selectedToolId = this._selectedToolId || this._tools[0]?.id || null;
       this._renderStep3ListAndEditor();
       if (this.step === 3) this.enableStep3Roi();
@@ -857,6 +1140,7 @@ export class Wizard {
     }
 
     if (this._step3Loaded) {
+      this._renumberToolIds();
       this._selectedToolId = this._selectedToolId || this._tools[0]?.id || null;
       this._renderStep3ListAndEditor();
       if (this.step === 3) this.enableStep3Roi();
@@ -867,24 +1151,75 @@ export class Wizard {
       const data = await window.__markeyeApp?.api?.get?.("/api/wizard/step/3");
       this._tools = Array.isArray(data?.tools) ? data.tools : [];
       this._step3Loaded = true;
+      this._renumberToolIds();
       this._selectedToolId = this._tools[0]?.id || null;
       this._renderStep3ListAndEditor();
       if (this.step === 3) this.enableStep3Roi();
     } catch {
       this._tools = this._tools.length ? this._tools : [];
+      this._renumberToolIds();
       this._selectedToolId = this._selectedToolId || this._tools[0]?.id || null;
       this._renderStep3ListAndEditor();
       if (this.step === 3) this.enableStep3Roi();
     }
   }
 
-  _renderStep3ListAndEditor({ keepEditorFocus = false } = {}) {
+  async _hydrateStep4() {
+    if (isMockMode()) {
+      this._comprehensiveLogic = 1;
+      this._trerrEnabled = true;
+      return;
+    }
+    if (this._step4Loaded) return;
+    try {
+      const data = await window.__markeyeApp?.api?.get?.("/api/wizard/step/4");
+      const io = data?.io || {};
+      const logic = parseInt(io.comprehensive_logic, 10);
+      this._comprehensiveLogic = Number.isFinite(logic) && logic >= 1 && logic <= 4 ? logic : 1;
+      this._trerrEnabled = io.trerr_enabled !== false;
+      this._step4Loaded = true;
+      this._render();
+    } catch {
+      this._comprehensiveLogic = 1;
+      this._trerrEnabled = true;
+    }
+  }
+
+  /** 按列表顺序自动分配工具 ID，并保留当前选中项与 HSV 面积缓存 */
+  _renumberToolIds() {
+    const selIdx = this._tools.findIndex((t) => t.id === this._selectedToolId);
+    const areaByIndex = this._tools.map((t) => this._hsvAreaResults[t.id]);
+
+    this._tools.forEach((t, i) => {
+      t.id = _formatToolId(i);
+      if (t.cam === undefined || t.cam === null) t.cam = 0;
+    });
+
+    this._hsvAreaResults = {};
+    this._tools.forEach((t, i) => {
+      if (areaByIndex[i]) this._hsvAreaResults[t.id] = areaByIndex[i];
+    });
+
+    if (selIdx >= 0 && selIdx < this._tools.length) {
+      this._selectedToolId = this._tools[selIdx].id;
+    }
+  }
+
+  _switchSelectedTool(toolId) {
+    if (!toolId || toolId === this._selectedToolId) return;
+    this._readToolEditor();
+    this._selectedToolId = toolId;
+    this._hsvPickActive = false;
+    this._renderStep3ListAndEditor({ skipEditorFlush: true });
+  }
+
+  _renderStep3ListAndEditor({ keepEditorFocus = false, skipEditorFlush = false } = {}) {
     const listEl = this.contentEl?.querySelector("#wizard-tool-list");
     const editorEl = this.contentEl?.querySelector("#wizard-tool-editor");
     if (!listEl || !editorEl) return;
 
-    // 重绘前先同步编辑器中的面积上限值，避免滑块 max 与表单不一致
-    if (editorEl.querySelector("[data-param-field]")) {
+    // 重绘前先同步编辑器 → 当前选中工具（切换工具时须 skipEditorFlush，避免写入错误工具）
+    if (!skipEditorFlush && editorEl.querySelector("[data-param-field]")) {
       this._readToolEditor();
     }
 
@@ -978,7 +1313,18 @@ export class Wizard {
     editorEl.querySelectorAll("[data-tool-field]").forEach((el) => {
       const k = el.dataset.toolField;
       if (k === "enabled") t.enabled = el.value === "true";
-      else t[k] = el.value;
+      else if (k === "cam") t.cam = Math.max(0, Math.min(1, parseInt(el.value, 10) || 0));
+      else if (k === "tool_kind") {
+        const prevType = t.type;
+        t.type = el.value;
+        t.name = _toolNameFromKind(t.type);
+        if (prevType !== t.type) {
+          t.params = t.type === "hsv_roi" ? DEFAULT_HSV_PARAMS() : DEFAULT_CONTOUR_PARAMS();
+          delete this._hsvAreaResults[t.id];
+          if (this._hsvMatchPreviewActive) this._clearHsvMatchPreview();
+          this._hsvPickActive = false;
+        }
+      } else t[k] = el.value;
     });
     t.roi = t.roi || {};
     editorEl.querySelectorAll("[data-roi-field]").forEach((el) => {
@@ -1035,19 +1381,117 @@ export class Wizard {
       if (Array.isArray(s) && s.every((v) => v === "" || Number.isNaN(v))) delete t.params.expected.size;
       if (!Object.keys(t.params.expected).length) delete t.params.expected;
     }
+    if (t.type === "hsv_roi") {
+      _sanitizeHsvParams(t.params);
+    }
 
     this._tools[idx] = t;
   }
 
-  async _saveCurrentStep() {
-    if (isMockMode()) return;
+  /** 按 STEP1 表单重连相机并刷新工具栏下拉 */
+  async applyStep1Cameras({ silent = false } = {}) {
+    if (isMockMode()) {
+      window.__markeyeApp?.syncCameraSelect?.();
+      return { ok: true, mock: true };
+    }
+    const cameras = _readCamerasListFromForm(this.contentEl);
+    try {
+      const res = await window.__markeyeApp?.api?.post?.("/api/cameras/reconnect", { cameras });
+      if (!silent) {
+        const statuses = res?.cameras || [];
+        const okCount = statuses.filter((s) => s.connected).length;
+        if (okCount >= 1) showToast(`已连接 ${okCount} 路相机`, "ok");
+        else showToast("相机连接失败，请检查设备", "warn");
+      }
+      await window.__markeyeApp?.api?.pullCurrentFrame?.();
+      await window.__markeyeApp?.syncCameraSelect?.();
+      return res;
+    } catch {
+      if (!silent) showToast("相机连接失败", "err");
+      return null;
+    }
+  }
 
+  _bindStep1CameraEvents() {
+    const onCameraFormChange = () => {
+      const cameras = _readCamerasListFromForm(this.contentEl);
+      _refreshDefaultCameraSelect(this.contentEl, cameras);
+      this.applyStep1Cameras();
+      window.__markeyeApp?.syncCameraSelect?.();
+    };
+
+    this.contentEl?.querySelectorAll('[data-field="camera-id"]').forEach((el) => {
+      el.removeEventListener("change", el._markeyeCamHandler);
+      el._markeyeCamHandler = onCameraFormChange;
+      el.addEventListener("change", el._markeyeCamHandler);
+    });
+
+    const defaultSel = this.contentEl?.querySelector('[data-field="camera-default"]');
+    if (defaultSel) {
+      defaultSel.removeEventListener("change", defaultSel._markeyeCamHandler);
+      defaultSel._markeyeCamHandler = async () => {
+        const cameraId = parseInt(defaultSel.value, 10);
+        if (!Number.isFinite(cameraId)) return;
+        if (isMockMode()) {
+          window.__markeyeApp?.syncCameraSelect?.({ camera_id: cameraId });
+          return;
+        }
+        try {
+          await window.__markeyeApp?.api?.post?.("/api/camera/select", { camera_id: cameraId });
+          await window.__markeyeApp?.api?.pullCurrentFrame?.();
+          await window.__markeyeApp?.syncCameraSelect?.();
+        } catch {
+          showToast("切换默认相机失败", "err");
+        }
+      };
+      defaultSel.addEventListener("change", defaultSel._markeyeCamHandler);
+    }
+
+    this.contentEl?.querySelectorAll('[data-action="camera-remove"]').forEach((btn) => {
+      btn.removeEventListener("click", btn._markeyeCamRemove);
+      btn._markeyeCamRemove = () => {
+        const row = btn.closest(".wizard-camera-row");
+        const listEl = this.contentEl?.querySelector("#wizard-camera-list");
+        if (!row || !listEl) return;
+        const inputs = [...listEl.querySelectorAll('[data-field="camera-id"]')];
+        if (inputs.length <= 1) return;
+        const idx = parseInt(row.dataset.cameraIndex, 10);
+        const values = inputs.map((inp) => parseInt(inp.value, 10) || 0);
+        values.splice(idx, 1);
+        listEl.innerHTML = _renderCameraListRows(values);
+        _refreshDefaultCameraSelect(this.contentEl, _readCamerasListFromForm(this.contentEl));
+        this._bindStep1CameraEvents();
+        onCameraFormChange();
+      };
+      btn.addEventListener("click", btn._markeyeCamRemove);
+    });
+  }
+
+  /** @deprecated 使用 applyStep1Cameras */
+  async applyStep1Camera(opts) {
+    return this.applyStep1Cameras(opts);
+  }
+
+  async _saveCurrentStep({ silent = true } = {}) {
     const fragment = this._collectStepFragment();
-    if (!fragment || !window.__markeyeApp?.api?.put) return;
+    if (!fragment) return false;
+
+    if (isMockMode()) {
+      if (!silent) showToast("参数已保存（Mock）", "ok");
+      return true;
+    }
+
+    if (!window.__markeyeApp?.api?.put) {
+      if (!silent) showToast("参数保存失败", "err");
+      return false;
+    }
     try {
       await window.__markeyeApp.api.put(`/api/wizard/step/${this.step}`, fragment);
+      if (!silent) showToast("参数已保存", "ok");
+      return true;
     } catch {
-      /* 保存失败不阻断向导 */
+      if (!silent) showToast("参数保存失败", "err");
+      return false;
     }
   }
 
@@ -1059,31 +1503,42 @@ export class Wizard {
       const source = el.querySelector('[data-field="trigger-source"]')?.value || "internal";
       const mapped = source === "software" ? "internal" : source === "external" ? "external" : source;
       const delay = parseInt(el.querySelector('[data-field="trigger-delay"]')?.value, 10);
+      const cameras = _readCamerasListFromForm(el);
+      const defaultCam = parseInt(el.querySelector('[data-field="camera-default"]')?.value, 10);
+      const camera_id = cameras.includes(defaultCam) ? defaultCam : cameras[0];
       const exposure = parseFloat(el.querySelector('[data-field="exposure"]')?.value);
       const gain = parseFloat(el.querySelector('[data-field="gain"]')?.value);
       const resize = parseInt(el.querySelector('[data-field="resize-width"]')?.value, 10);
       const trigger = { source: mapped };
       if (Number.isFinite(delay)) trigger.delay_ms = delay;
-      const input = {};
+      const input = { cameras, camera_id };
       if (Number.isFinite(exposure)) input.exposure = exposure;
       if (Number.isFinite(gain)) input.gain = gain;
-      const fragment = { trigger };
-      if (Object.keys(input).length) fragment.input = input;
+      const fragment = { trigger, input };
       if (Number.isFinite(resize)) fragment.preprocess = { resize_width: resize };
       return fragment;
     }
     if (this.step === 4) {
-      const trerrOn = el.querySelector('[data-toggle="trerr"] .is-active')?.dataset?.val === "on";
+      const el = this.contentEl;
+      const trerrOn = el?.querySelector('[data-toggle="trerr"] .is-active')?.dataset?.val === "on";
+      const condSel = el?.querySelector('[data-field="comprehensive-condition"]');
+      const condLogic = condSel ? parseInt(condSel.value, 10) : NaN;
+      const logic = Number.isFinite(condLogic) ? condLogic : (this._comprehensiveLogic ?? 1);
+      this._comprehensiveLogic = logic;
       return {
-        io: { trerr_enabled: trerrOn },
+        io: {
+          trerr_enabled: trerrOn,
+          comprehensive_logic: logic,
+        },
         output: {
-          save_policy: el.querySelector('[data-field="save-policy"]')?.value || "none",
+          save_policy: el?.querySelector('[data-field="save-policy"]')?.value || "none",
         },
       };
     }
     if (this.step === 3) {
-      // 仅保存 tools（运行中右侧检测项目完全由 tools 决定）
-      return { tools: this._tools };
+      this._readToolEditor();
+      this._renumberToolIds();
+      return { tools: structuredClone(this._tools) };
     }
     return {};
   }

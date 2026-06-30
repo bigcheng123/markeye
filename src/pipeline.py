@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
@@ -13,6 +13,44 @@ from .inspector import InspectionResult, Inspector
 from .preprocessor import Preprocessor
 from .utils import draw_detection, overlay_result
 from .tools.roi_tools import run_roi_tools
+
+
+def aggregate_tool_results(
+    tool_results: list[dict],
+    io_config: dict | None = None,
+) -> tuple[bool, list[str]]:
+    """按 io.comprehensive_logic 汇总各工具判定结果。"""
+    if not tool_results:
+        return False, []
+
+    logic = 1
+    if io_config:
+        try:
+            logic = int(io_config.get("comprehensive_logic", 1))
+        except (TypeError, ValueError):
+            logic = 1
+
+    fail_reasons: list[str] = []
+    passed_flags = [bool(t.get("passed")) for t in tool_results]
+
+    if logic in (1, 2):
+        # 逻辑 1/2：全部工具 OK 时综合 OK；任一 NG 则综合 NG
+        all_pass = all(passed_flags)
+    elif logic == 3:
+        # 逻辑 3（占位）：任一工具 OK 即综合 OK
+        all_pass = any(passed_flags)
+    elif logic == 4:
+        # 逻辑 4（占位）：与逻辑 1 相同，待 UI 规范后调整
+        all_pass = all(passed_flags)
+    else:
+        all_pass = all(passed_flags)
+
+    if not all_pass:
+        for t in tool_results:
+            if not t.get("passed"):
+                fail_reasons.extend(t.get("fail_reasons", []) or [])
+
+    return all_pass, fail_reasons
 
 
 @dataclass
@@ -45,8 +83,16 @@ class DetectionPipeline:
         binary = self._preprocessor.process(img)
         return self._detector.detect(binary, img)
 
-    def run(self, img: np.ndarray) -> PipelineResult:
-        """对 BGR 图像执行完整检测。"""
+    def run(self, images: Union[np.ndarray, dict[int, np.ndarray]]) -> PipelineResult:
+        """对 BGR 图像（或按槽位多帧）执行完整检测。"""
+        if isinstance(images, dict):
+            primary = images.get(0)
+            if primary is None:
+                primary = next((f for f in images.values() if f is not None), None)
+            img = primary
+        else:
+            img = images
+
         if img is None:
             return PipelineResult(
                 passed=False,
@@ -72,7 +118,7 @@ class DetectionPipeline:
         binary = self._preprocessor.process(img)
         marks = self._detector.detect(binary, img)
         inspections = self._inspector.inspect(img, marks, self.config)
-        tool_results = run_roi_tools(img, self.config)
+        tool_results = run_roi_tools(images if isinstance(images, dict) else img, self.config)
 
         fail_reasons: list[str] = []
         for r in inspections:
@@ -81,10 +127,9 @@ class DetectionPipeline:
 
         # 运行结果以 tools 为准；未定义 tools 时回退到原有 inspections
         if tool_results:
-            all_pass = all(bool(t.get("passed")) for t in tool_results)
-            for t in tool_results:
-                if not t.get("passed"):
-                    fail_reasons.extend(t.get("fail_reasons", []) or [])
+            io_cfg = (self.config or {}).get("io") or {}
+            all_pass, tool_fail_reasons = aggregate_tool_results(tool_results, io_cfg)
+            fail_reasons.extend(tool_fail_reasons)
         else:
             all_pass = bool(inspections) and all(r.passed for r in inspections)
             if not marks:

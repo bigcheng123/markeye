@@ -136,3 +136,39 @@ def test_contour_roi_tool_rect_with_expected_pass():
     assert r["tool"] == "02"
     assert r["passed"] is True
 
+
+def test_run_roi_tools_uses_per_tool_cam_slot():
+    from src.tools.roi_tools import run_roi_tools
+
+    img0 = np.zeros((80, 80, 3), dtype=np.uint8)
+    img0[20:40, 20:40] = (0, 255, 0)
+    img1 = np.zeros((80, 80, 3), dtype=np.uint8)
+    img1[10:30, 10:30] = (0, 0, 255)
+
+    config = {
+        "tools": [
+            {
+                "id": "01",
+                "cam": 0,
+                "type": "hsv_roi",
+                "enabled": True,
+                "roi": {"shape": "rect", "x": 10, "y": 10, "w": 50, "h": 50},
+                "params": {"h_lower": [35, 50, 50], "h_upper": [85, 255, 255]},
+            },
+            {
+                "id": "02",
+                "cam": 1,
+                "type": "hsv_roi",
+                "enabled": True,
+                "roi": {"shape": "rect", "x": 5, "y": 5, "w": 40, "h": 40},
+                "params": {"h_lower": [0, 50, 50], "h_upper": [10, 255, 255]},
+            },
+        ]
+    }
+    results = run_roi_tools({0: img0, 1: img1}, config)
+    assert len(results) == 2
+    assert results[0]["tool"] == "01"
+    assert results[1]["tool"] == "02"
+    assert results[0]["value"] > 0
+    assert results[1]["value"] > 0
+

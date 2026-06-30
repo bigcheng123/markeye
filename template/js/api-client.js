@@ -39,6 +39,8 @@ class MockApiClient {
       { id: "config.local", name: "config.local.yaml", active: false },
     ];
     this._wizardData = {};
+    this._mockCameras = [0, 1, 2];
+    this._mockCameraId = 0;
   }
 
   _profileList() {
@@ -121,6 +123,55 @@ class MockApiClient {
       if (!hsv) throw new Error("empty roi");
       return { hsv };
     }
+    if (path === "/api/cameras/reconnect") {
+      const cameras = Array.isArray(body?.cameras) && body.cameras.length
+        ? [...new Set(body.cameras.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b)
+        : [0, 1];
+      if (!cameras.length) cameras.push(0);
+      this._mockCameras = cameras;
+      if (!cameras.includes(this._mockCameraId)) this._mockCameraId = cameras[0];
+      if (window.__markeyeApp) {
+        window.__markeyeApp._mockCameras = cameras;
+        window.__markeyeApp._mockCameraId = this._mockCameraId;
+      }
+      return {
+        ok: true,
+        mock: true,
+        results: { 0: true, 1: cameras.length > 1 },
+        cameras: [
+          { slot: 0, device_id: cameras[0], connected: true },
+          { slot: 1, device_id: cameras[1] ?? cameras[0], connected: cameras.length > 1 },
+        ],
+        available_cameras: cameras,
+      };
+    }
+    if (path === "/api/camera/switch") {
+      return { ok: true, camera_id: 1, cam: 2, mock: true };
+    }
+    if (path === "/api/camera/select") {
+      let cameraId = body?.camera_id;
+      if (cameraId == null && body?.cam != null) {
+        cameraId = Math.max(0, parseInt(body.cam, 10) - 1);
+      }
+      cameraId = parseInt(cameraId, 10);
+      if (!Number.isFinite(cameraId)) cameraId = 0;
+      this._mockCameraId = cameraId;
+      if (!this._mockCameras.includes(cameraId)) {
+        this._mockCameras = [...new Set([...this._mockCameras, cameraId])].sort((a, b) => a - b);
+      }
+      if (window.__markeyeApp) {
+        window.__markeyeApp._mockCameras = this._mockCameras;
+        window.__markeyeApp._mockCameraId = cameraId;
+      }
+      return {
+        ok: true,
+        connected: true,
+        camera_id: cameraId,
+        cam: cameraId + 1,
+        mock: true,
+        available_cameras: this._mockCameras,
+      };
+    }
     return { ok: true, mock: true, path, body, state: getMockState() };
   }
 
@@ -131,6 +182,20 @@ class MockApiClient {
       const step = m[1];
       const key = `${this._activeProfile}:step${step}`;
       this._wizardData[key] = { ...(this._wizardData[key] || {}), ...body };
+      if (step === "1" && body?.input?.cameras) {
+        const cameras = body.input.cameras.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n) && n >= 0);
+        if (cameras.length) {
+          this._mockCameras = [...new Set(cameras)].sort((a, b) => a - b);
+          const cid = parseInt(body.input.camera_id, 10);
+          this._mockCameraId = Number.isFinite(cid) && this._mockCameras.includes(cid)
+            ? cid
+            : this._mockCameras[0];
+          if (window.__markeyeApp) {
+            window.__markeyeApp._mockCameras = this._mockCameras;
+            window.__markeyeApp._mockCameraId = this._mockCameraId;
+          }
+        }
+      }
       return { ok: true, mock: true };
     }
     return { ok: true, mock: true, path, body };
@@ -146,9 +211,21 @@ class MockApiClient {
       const key = `${this._activeProfile}:step${wm[1]}`;
       return this._wizardData[key] || {};
     }
-    if (path === "/api/calibration/master/image") {
+    if (path === "/api/camera/options") {
+      return {
+        cameras: this._mockCameras,
+        camera_id: this._mockCameraId,
+        connected: this._connected,
+        mock: true,
+      };
+    }
+    if (path.startsWith("/api/calibration/master/image")) {
       const img = getMockMasterImage();
       if (!img) throw new Error("404");
+      return img;
+    }
+    if (path.startsWith("/api/cameras/live")) {
+      const img = getMockMasterImage() || { image_base64: "", width: 800, height: 500 };
       return img;
     }
     return { ok: true, mock: true, path, state: getMockState() };

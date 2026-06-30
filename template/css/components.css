@@ -76,6 +76,52 @@
   font-size: 12px;
 }
 
+.toolbar-camera-label {
+  margin-left: 4px;
+  font-size: 12px;
+  color: #ddd;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.wizard-camera-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.wizard-camera-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wizard-camera-row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.btn-camera-row-del {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
+.btn-camera-add {
+  margin-top: 6px;
+  align-self: flex-start;
+}
+
+.wizard-form-row--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.wizard-form-row--stack > label {
+  margin-bottom: 4px;
+}
+
 .btn-trigger-icon {
   font-weight: 700;
   border: 1px solid #888;
@@ -690,7 +736,7 @@
   min-width: 2.5rem;
   padding: 4px 8px;
   font-weight: 600;
-  color: var(--color-accent, #c45a00);
+  color: var(--color-text-muted, #666);
   background: var(--color-bg-app);
   border-radius: var(--radius-sm);
 }
@@ -711,6 +757,12 @@
 .wizard-tool-actions .btn {
   flex: 1;
   font-size: 12px;
+}
+
+.wizard-tool-actions .wizard-tool-save-btn {
+  flex: 0 1 auto;
+  margin-left: auto;
+  min-width: 96px;
 }
 
 .wizard-tool-list {
@@ -744,17 +796,41 @@
   color: #fff;
 }
 
-.btn-ai-shoot {
+.btn-ai-shoot-row {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+.wizard-camera-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  width: 100%;
+}
+
+.wizard-camera-row {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: var(--spacing-sm);
-  width: 100%;
-  max-width: 280px;
-  height: 56px;
-  margin-top: var(--spacing-md);
-  font-size: 16px;
-  font-weight: 600;
+}
+
+.wizard-camera-row [data-field="camera-id"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.wizard-camera-row .btn-camera-row-del {
+  flex: 0 0 auto;
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
+.btn-camera-add {
+  align-self: flex-start;
+  margin-top: var(--spacing-xs);
 }
 
 /* Modal */

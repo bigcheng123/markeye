@@ -19,10 +19,15 @@ def tools_rois_to_json(config: dict) -> list[dict]:
         roi = t.get("roi")
         if not isinstance(roi, dict):
             continue
+        try:
+            cam = max(0, min(1, int(t.get("cam", 0))))
+        except (TypeError, ValueError):
+            cam = 0
         items.append(
             {
                 "id": t.get("id") or t.get("name") or "tool",
                 "name": t.get("name", ""),
+                "cam": cam,
                 "roi": roi,
             }
         )

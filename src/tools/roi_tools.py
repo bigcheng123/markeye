@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import cv2
 import numpy as np
@@ -329,13 +329,43 @@ def run_contour_roi_tool(img: np.ndarray, tool: dict) -> dict:
     }
 
 
-def run_roi_tools(img: np.ndarray, config: dict) -> list[dict]:
+def _tool_cam_slot(tool: dict) -> int:
+    try:
+        return max(0, int(tool.get("cam", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _image_for_tool(images: Union[np.ndarray, dict[int, np.ndarray], None], tool: dict) -> Optional[np.ndarray]:
+    if images is None:
+        return None
+    if isinstance(images, dict):
+        slot = _tool_cam_slot(tool)
+        if slot in images and images[slot] is not None:
+            return images[slot]
+        return images.get(0)
+    return images
+
+
+def run_roi_tools(images: Union[np.ndarray, dict[int, np.ndarray], None], config: dict) -> list[dict]:
     tools = (config or {}).get("tools") or []
     out: list[dict] = []
     for t in tools:
         if not isinstance(t, dict):
             continue
         if t.get("enabled", True) is False:
+            continue
+        img = _image_for_tool(images, t)
+        if img is None:
+            out.append({
+                "tool": t.get("id", t.get("name", "tool")),
+                "name": t.get("name", "tool"),
+                "passed": False,
+                "value": 0,
+                "threshold": 100,
+                "fail_reasons": [f"CAM#{_tool_cam_slot(t)} 无有效图像"],
+                "details": {"cam": _tool_cam_slot(t)},
+            })
             continue
         t_type = t.get("type")
         if t_type == "hsv_roi":

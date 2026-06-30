@@ -9,11 +9,13 @@ const MOCK_TOOL_ROIS = [
   {
     id: "01",
     name: "学习",
+    cam: 0,
     roi: { shape: "rect", x: 200, y: 140, w: 140, h: 80 },
   },
   {
     id: "02",
     name: "彩色识别",
+    cam: 1,
     roi: { shape: "rect", x: 480, y: 280, w: 120, h: 70 },
   },
 ];

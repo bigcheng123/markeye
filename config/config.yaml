@@ -1,6 +1,9 @@
 input:
+  cameras:
+  - 0
+  - 1
   camera_id: 0
-  fallback_image: C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-12\test_trigger0\sample.jpg
+  fallback_image: C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_tool_image_returns_roi_cr0\sample.jpg
   exposure: 50
   gain: 1
 preprocess:
@@ -16,14 +19,16 @@ preprocess:
   morph_kernel: 3
   morph_iters: 1
 calibration:
-  master_image: //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案
-    · 课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master.jpg
-  sample_count: 18
+  master_image: C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_trigger_dual_tools_overal0\cam0.jpg
+  sample_count: 53
   reference_center:
-  - 143
+  - 140
   - 957
-  reference_area: 83.0
+  reference_area: 128.0
   learn_threshold: 73
+  masters:
+    '0': C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_trigger_dual_tools_overal0\cam0.jpg
+    '1': C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_trigger_dual_tools_overal0\cam1.jpg
 trigger:
   source: external
   exposure_ms: null
@@ -101,33 +106,63 @@ inspect:
   position_tolerance: 10
 tools:
 - id: '01'
-  name: 色彩识别
+  cam: 0
   type: hsv_roi
   enabled: true
   roi:
     shape: rect
     x: 400
-    y: 330
-    w: 122
-    h: 70
+    y: 340
+    w: 60
+    h: 80
     cx: 0
     cy: 0
     r: 10
   params:
     h_lower:
-    - 3
-    - 158
-    - 206
+    - 2
+    - 140
+    - 179
     h_upper:
-    - 23
-    - 238
+    - 66
+    - 245
     - 255
+    match_area_max: 2000
+    match_area_min: 1500
     h_sample:
     - 14
-    - 189
-    - 237
-    match_area_max: 2000
-    match_area_min: 1000
+    - 191
+    - 244
+  name: 色彩识别
+- name: 色彩识别
+  type: hsv_roi
+  enabled: true
+  cam: 1
+  roi:
+    shape: rect
+    x: 200
+    y: 400
+    w: 120
+    h: 80
+    cx: 0
+    cy: 0
+    r: 10
+  params:
+    h_lower:
+    - 50
+    - 100
+    - 100
+    h_upper:
+    - 180
+    - 255
+    - 255
+    match_area_max: 7000
+    match_area_min: 4000
+    h_sample:
+    - 107
+    - 117
+    - 188
+  id: '02'
 io:
   enabled: false
   host: 127.0.0.1

@@ -7,6 +7,28 @@ from typing import Optional
 
 import yaml
 
+from .camera_config import NUM_CAMERA_SLOTS, normalize_config
+
+
+def _validate_wizard_step3(cfg: dict) -> None:
+    """已启用工具所用的 CAM# 槽位须已注册主控图像。"""
+    masters = (cfg.get("calibration") or {}).get("masters") or {}
+    missing: list[str] = []
+    for t in cfg.get("tools") or []:
+        if not isinstance(t, dict) or t.get("enabled", True) is False:
+            continue
+        try:
+            slot = max(0, min(NUM_CAMERA_SLOTS - 1, int(t.get("cam", 0))))
+        except (TypeError, ValueError):
+            slot = 0
+        key = str(slot)
+        path = masters.get(key) or masters.get(slot)
+        if not path:
+            tid = t.get("id") or t.get("name") or "?"
+            missing.append(f"工具 {tid} 使用 CAM#{slot} 但未注册主控图像")
+    if missing:
+        raise ValueError("; ".join(missing))
+
 
 class ConfigStore:
     """管理 config/*.yaml 配方文件。"""
@@ -49,15 +71,16 @@ class ConfigStore:
         if not path.exists():
             raise FileNotFoundError(f"配置不存在: {path}")
         with open(path, "r", encoding="utf-8") as f:
-            self._cache = yaml.safe_load(f) or {}
+            self._cache = normalize_config(yaml.safe_load(f) or {})
         return self._cache
 
     def save(self, data: dict) -> None:
         path = self.active_path
         path.parent.mkdir(parents=True, exist_ok=True)
+        normalized = normalize_config(data)
         with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        self._cache = data
+            yaml.dump(normalized, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        self._cache = normalized
 
     def get_cached(self) -> dict:
         if self._cache is None:
@@ -94,5 +117,7 @@ class ConfigStore:
                 cfg[key] = {**cfg.get(key, {}), **val}
             else:
                 cfg[key] = val
+        if step == 3:
+            _validate_wizard_step3(cfg)
         self.save(cfg)
         return cfg

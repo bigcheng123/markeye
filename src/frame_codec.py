@@ -64,12 +64,21 @@ def _frame_images(
     return frame_info
 
 
+def _comprehensive_logic(config: dict) -> int:
+    io_cfg = (config or {}).get("io") or {}
+    try:
+        return int(io_cfg.get("comprehensive_logic", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def build_idle_frame(
     config: dict,
     stats: dict,
     preview_image: Optional[np.ndarray] = None,
     marks: Optional[list] = None,
     tool_results: Optional[list] = None,
+    preview_cam: int = 0,
 ) -> dict:
     cal = config.get("calibration", {})
     trigger = config.get("trigger", {})
@@ -81,11 +90,13 @@ def build_idle_frame(
         if has_active_tools(config)
         else marks_to_json(marks or [])
     )
+    slot = max(0, min(1, int(preview_cam)))
     return {
         "type": "frame",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "idle": True,
-        "overall": {"passed": None},
+        "overall": {"passed": None, "logic": _comprehensive_logic(config)},
+        "preview_cam": slot,
         "frame": frame_info,
         "marks": marks_json,
         "tool_rois": tools_rois_to_json(config),
@@ -151,7 +162,8 @@ def build_result_frame(
     return {
         "type": "frame",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "overall": {"passed": passed},
+        "overall": {"passed": passed, "logic": _comprehensive_logic(config)},
+        "preview_cam": 0,
         "frame": frame_info,
         "marks": marks_json,
         "tool_rois": tools_rois_to_json(config),

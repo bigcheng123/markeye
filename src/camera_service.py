@@ -1,54 +1,76 @@
-"""相机采集与软触发采图。"""
+"""相机采集与软触发采图（双槽位 CAM#0 / CAM#1）。"""
 
 from __future__ import annotations
 
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
 
+from .camera_config import NUM_CAMERA_SLOTS, slot_device_ids
 from .utils import imread
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-class CameraService:
-    """管理相机连接与单帧采集。
+@dataclass
+class _SlotState:
+    device_id: int = 0
+    cap: Optional[cv2.VideoCapture] = None
+    connected: bool = False
+    using_fallback: bool = False
+    latest_frame: Optional[np.ndarray] = None
+    last_frame: Optional[np.ndarray] = None
+    frame_seq: int = 0
 
-    后台采集线程持续更新最新帧；预览与触发均从该缓冲读取，避免多路 read 争抢导致滞后或回退静态图。
-    """
+
+class CameraService:
+    """管理两路逻辑相机槽位，每槽位映射一个 OpenCV 设备号。"""
 
     def __init__(self, config: dict):
         self.config = config
-        self._cap: Optional[cv2.VideoCapture] = None
-        self._connected = False
-        self._using_fallback = False
-        self._last_frame: Optional[np.ndarray] = None
-        self._latest_frame: Optional[np.ndarray] = None
-        self._frame_seq = 0
+        self._slots: list[_SlotState] = [_SlotState() for _ in range(NUM_CAMERA_SLOTS)]
         self._lock = threading.Lock()
         self._grab_stop = threading.Event()
         self._grab_thread: Optional[threading.Thread] = None
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        return self.is_connected(0)
 
     @property
     def using_fallback(self) -> bool:
-        return self._using_fallback
+        return self._slots[0].using_fallback
 
     @property
     def frame_seq(self) -> int:
         with self._lock:
-            return self._frame_seq
+            return self._slots[0].frame_seq
+
+    def is_connected(self, slot: int = 0) -> bool:
+        if slot < 0 or slot >= NUM_CAMERA_SLOTS:
+            return False
+        return self._slots[slot].connected
+
+    def slot_status(self) -> list[dict]:
+        devices = slot_device_ids(self.config)
+        out = []
+        for i in range(NUM_CAMERA_SLOTS):
+            s = self._slots[i]
+            out.append({
+                "slot": i,
+                "device_id": devices[i] if i < len(devices) else i,
+                "connected": s.connected,
+                "using_fallback": s.using_fallback,
+            })
+        return out
 
     def _open_capture(self, cam_id: int) -> Optional[cv2.VideoCapture]:
-        """按平台尝试打开相机；Windows 优先 DirectShow。"""
         backends: list[int | None] = []
         if sys.platform == "win32":
             backends.extend([cv2.CAP_DSHOW, cv2.CAP_MSMF, None])
@@ -72,32 +94,71 @@ class CameraService:
         return None
 
     def connect(self, camera_id: Optional[int] = None) -> bool:
-        self.disconnect()
-        inp = self.config.get("input", {})
-        cam_id = camera_id if camera_id is not None else inp.get("camera_id", 0)
-        self._cap = self._open_capture(int(cam_id))
-        self._connected = self._cap is not None
-        self._using_fallback = not self._connected
-        if self._connected:
+        """兼容旧 API：连接全部槽位；camera_id 仅更新 slot0 设备号。"""
+        if camera_id is not None:
+            inp = self.config.setdefault("input", {})
+            cameras = list(slot_device_ids(self.config))
+            cameras[0] = int(camera_id)
+            inp["cameras"] = cameras
+            inp["camera_id"] = int(camera_id)
+        return all(self.connect_all().values())
+
+    def connect_all(self, cameras: Optional[list[int]] = None) -> dict[int, bool]:
+        devices = cameras if cameras is not None else slot_device_ids(self.config)
+        results: dict[int, bool] = {}
+        for slot in range(NUM_CAMERA_SLOTS):
+            dev = int(devices[slot]) if slot < len(devices) else slot
+            results[slot] = self.connect_slot(slot, dev)
+        if any(results.values()) and (self._grab_thread is None or not self._grab_thread.is_alive()):
             self._start_grabber()
-        return self._connected
+        if not any(results.values()):
+            self._stop_grabber()
+        return results
+
+    def connect_slot(self, slot: int, device_id: int) -> bool:
+        if slot < 0 or slot >= NUM_CAMERA_SLOTS:
+            return False
+        self.disconnect_slot(slot)
+        state = self._slots[slot]
+        state.device_id = int(device_id)
+        state.cap = self._open_capture(state.device_id)
+        state.connected = state.cap is not None
+        state.using_fallback = not state.connected
+        return state.connected
+
+    def disconnect_slot(self, slot: int) -> None:
+        if slot < 0 or slot >= NUM_CAMERA_SLOTS:
+            return
+        state = self._slots[slot]
+        if state.cap is not None:
+            state.cap.release()
+            state.cap = None
+        state.connected = False
+        state.using_fallback = False
+        with self._lock:
+            state.latest_frame = None
 
     def disconnect(self) -> None:
         self._stop_grabber()
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
-        self._connected = False
-        self._using_fallback = False
-        with self._lock:
-            self._latest_frame = None
+        for slot in range(NUM_CAMERA_SLOTS):
+            self.disconnect_slot(slot)
 
     def switch(self) -> bool:
-        inp = self.config.get("input", {})
-        current = inp.get("camera_id", 0)
-        next_id = 1 if current == 0 else 0
-        inp["camera_id"] = next_id
-        return self.connect(next_id)
+        """RUN 模式快捷切换：交换 slot0 / slot1 的设备映射并重连。"""
+        inp = self.config.setdefault("input", {})
+        cameras = list(slot_device_ids(self.config))
+        cameras[0], cameras[1] = cameras[1], cameras[0]
+        inp["cameras"] = cameras
+        inp["camera_id"] = cameras[0]
+        results = self.connect_all(cameras)
+        return results.get(0, False)
+
+    def update_cameras_config(self, cameras: list[int]) -> dict[int, bool]:
+        inp = self.config.setdefault("input", {})
+        normalized = [int(cameras[i]) for i in range(NUM_CAMERA_SLOTS)]
+        inp["cameras"] = normalized
+        inp["camera_id"] = normalized[0]
+        return self.connect_all(normalized)
 
     def _resolve_fallback_path(self) -> Optional[Path]:
         inp = self.config.get("input", {})
@@ -107,7 +168,6 @@ class CameraService:
             path = ROOT / path
         if path.exists():
             return path
-
         for candidate in (
             ROOT / "data" / "sample.jpg",
             ROOT / "ui" / "ui_sample" / "target.PNG",
@@ -117,13 +177,10 @@ class CameraService:
         return None
 
     def _start_grabber(self) -> None:
-        self._stop_grabber()
+        if self._grab_thread and self._grab_thread.is_alive():
+            return
         self._grab_stop.clear()
-        thread = threading.Thread(
-            target=self._grabber_loop,
-            name="markeye-camera-grabber",
-            daemon=True,
-        )
+        thread = threading.Thread(target=self._grabber_loop, name="markeye-camera-grabber", daemon=True)
         self._grab_thread = thread
         thread.start()
 
@@ -136,69 +193,79 @@ class CameraService:
 
     def _grabber_loop(self) -> None:
         while not self._grab_stop.is_set():
-            if not self._connected or self._cap is None:
-                time.sleep(0.03)
-                continue
+            any_read = False
+            for slot in range(NUM_CAMERA_SLOTS):
+                state = self._slots[slot]
+                if not state.connected or state.cap is None:
+                    continue
+                ret, frame = state.cap.read()
+                if ret and frame is not None:
+                    with self._lock:
+                        state.latest_frame = frame
+                        state.last_frame = frame
+                        state.frame_seq += 1
+                        state.using_fallback = False
+                    any_read = True
+                else:
+                    state.using_fallback = True
+            if not any_read:
+                time.sleep(0.02)
 
-            ret, frame = self._cap.read()
-            if ret and frame is not None:
-                with self._lock:
-                    self._latest_frame = frame
-                    self._last_frame = frame
-                    self._frame_seq += 1
-                    self._using_fallback = False
-                continue
-
-            self._using_fallback = True
-            time.sleep(0.02)
-
-    def _capture_fallback_unlocked(self) -> Optional[np.ndarray]:
-        """无实时帧时的兜底：最近成功帧或样本图（不使用主控静态图）。"""
-        if self._last_frame is not None:
-            return self._last_frame.copy()
-
+    def _capture_fallback_unlocked(self, slot: int) -> Optional[np.ndarray]:
+        state = self._slots[slot]
+        if state.last_frame is not None:
+            return state.last_frame.copy()
         fallback_path = self._resolve_fallback_path()
         if fallback_path is not None:
             img = imread(str(fallback_path))
             if img is not None:
-                self._last_frame = img
-                self._using_fallback = True
+                state.last_frame = img
+                state.using_fallback = True
                 return img.copy()
-
         return None
 
-    def get_live_frame(self) -> Optional[np.ndarray]:
-        """预览：返回采集线程当前最新帧副本。"""
+    def get_live_frame(self, slot: int = 0) -> Optional[np.ndarray]:
+        if slot < 0 or slot >= NUM_CAMERA_SLOTS:
+            slot = 0
+        state = self._slots[slot]
         with self._lock:
-            if self._latest_frame is not None:
-                return self._latest_frame.copy()
-            return self._capture_fallback_unlocked()
+            if state.latest_frame is not None:
+                return state.latest_frame.copy()
+            return self._capture_fallback_unlocked(slot)
 
-    def capture_for_trigger(self, *, max_wait_s: float = 0.2) -> Optional[np.ndarray]:
-        """软触发：等待采集线程产出新帧后返回，确保为点击时刻的最新画面。"""
+    def capture_for_trigger(self, slot: int = 0, *, max_wait_s: float = 0.2) -> Optional[np.ndarray]:
+        if slot < 0 or slot >= NUM_CAMERA_SLOTS:
+            slot = 0
+        state = self._slots[slot]
         with self._lock:
-            start_seq = self._frame_seq
+            start_seq = state.frame_seq
 
         deadline = time.monotonic() + max_wait_s
         while time.monotonic() < deadline:
             time.sleep(0.005)
             with self._lock:
-                if self._frame_seq > start_seq and self._latest_frame is not None:
-                    return self._latest_frame.copy()
+                if state.frame_seq > start_seq and state.latest_frame is not None:
+                    return state.latest_frame.copy()
 
         with self._lock:
-            if self._latest_frame is not None:
-                return self._latest_frame.copy()
-            return self._capture_fallback_unlocked()
+            if state.latest_frame is not None:
+                return state.latest_frame.copy()
+            return self._capture_fallback_unlocked(slot)
 
-    def capture_frame(self) -> Optional[np.ndarray]:
-        return self.get_live_frame()
+    def capture_all_for_trigger(self) -> dict[int, Optional[np.ndarray]]:
+        return {slot: self.capture_for_trigger(slot) for slot in range(NUM_CAMERA_SLOTS)}
 
-    def capture_latest_frame(self) -> Optional[np.ndarray]:
-        return self.capture_for_trigger()
+    def capture_frame(self, slot: int = 0) -> Optional[np.ndarray]:
+        return self.get_live_frame(slot)
 
-    def get_last_frame(self) -> Optional[np.ndarray]:
+    def capture_latest_frame(self, slot: int = 0) -> Optional[np.ndarray]:
+        return self.capture_for_trigger(slot)
+
+    def get_last_frame(self, slot: int = 0) -> Optional[np.ndarray]:
+        if slot < 0 or slot >= NUM_CAMERA_SLOTS:
+            slot = 0
+        state = self._slots[slot]
         with self._lock:
-            if self._last_frame is None:
+            if state.last_frame is None:
                 return None
-            return self._last_frame.copy()
+            return state.last_frame.copy()

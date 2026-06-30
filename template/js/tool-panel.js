@@ -12,6 +12,7 @@ export class ToolPanel {
     this._bindList();
     this._renderDetailShell();
     this.onThresholdChange = null;
+    this.onToolSelect = null;
   }
 
   _syncMetaFromInspections(inspections) {
@@ -36,12 +37,18 @@ export class ToolPanel {
   }
 
   selectTool(tool) {
-    this.selectedTool = tool;
+    // 再次点击当前工具：取消选择并恢复默认画面
+    if (tool && this.selectedTool === tool) {
+      this.selectedTool = null;
+    } else {
+      this.selectedTool = tool;
+    }
     this.listEl?.querySelectorAll(".tool-card").forEach((el) => {
-      el.classList.toggle("is-selected", el.dataset.tool === tool);
+      el.classList.toggle("is-selected", el.dataset.tool === this.selectedTool);
     });
     this._renderDetail(this._lastInspections, this._lastStats);
     this.detailEl?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    this.onToolSelect?.(this.selectedTool);
   }
 
   focusThreshold() {

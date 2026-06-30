@@ -19,13 +19,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .calibration import CalibrationService
+from .camera_config import available_camera_ids, camera_id_to_cam_slot, slot_device_ids
 from .camera_service import CameraService
 from .config_store import ConfigStore
 from .display_images import _hsv_hit_mask, has_active_tools
 from .frame_codec import build_idle_frame, build_result_frame, encode_image_b64, maybe_save_result
 from .io.modbus_client import ModbusIOService
 from .pipeline import DetectionPipeline
-from .tools.roi_tools import compute_hsv_area_in_roi, run_roi_tools, sample_hsv_in_roi
+from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, run_roi_tools, sample_hsv_in_roi
 from .stats_store import StatsStore
 from .utils import json_safe, setup_logger
 
@@ -52,26 +53,72 @@ class AppState:
         self._last_frame_payload: dict = self.build_idle_payload()
 
     def build_idle_payload(
-        self, frame: Optional[np.ndarray] = None, *, fast_preview: bool = False
+        self, frame: Optional[np.ndarray] = None, *, fast_preview: bool = False, slot: Optional[int] = None
     ) -> dict:
         cfg = self.config_store.get_cached()
-        preview = frame if frame is not None else self.camera.get_live_frame()
+        if slot is None:
+            slot = camera_id_to_cam_slot(cfg)
+        preview = frame if frame is not None else self.camera.get_live_frame(slot)
+        images = preview
+        if has_active_tools(cfg) and preview is not None:
+            images = {slot: preview}
         if fast_preview:
             marks = []
             tool_results = []
         elif has_active_tools(cfg):
             marks = []
-            tool_results = run_roi_tools(preview, cfg) if preview is not None else []
+            tool_results = run_roi_tools(images, cfg) if preview is not None else []
         else:
             marks = self.pipeline.locate(preview) if preview is not None else []
-            tool_results = run_roi_tools(preview, cfg) if preview is not None else []
-        return build_idle_frame(cfg, self.stats.snapshot(), preview, marks, tool_results)
+            tool_results = run_roi_tools(images, cfg) if preview is not None else []
+        return build_idle_frame(
+            cfg, self.stats.snapshot(), preview, marks, tool_results, preview_cam=slot
+        )
 
     def reload_services(self) -> None:
         cfg = self.config_store.get_cached()
+        old_devices = slot_device_ids(self.camera.config)
+        new_devices = slot_device_ids(cfg)
         self.camera.config = cfg
         self.pipeline = DetectionPipeline(cfg)
         self.io = ModbusIOService(cfg)
+        if old_devices != new_devices:
+            self.camera.connect_all(new_devices)
+
+    def reconnect_cameras(self, cameras: Optional[list[int]] = None) -> dict[int, bool]:
+        cfg = self.config_store.get_cached()
+        if cameras is not None:
+            inp = cfg.setdefault("input", {})
+            full = sorted({int(c) for c in cameras})
+            if not full:
+                full = [0]
+            inp["cameras"] = full
+            cam_id = int(inp.get("camera_id", full[0]))
+            if cam_id not in full:
+                cam_id = full[0]
+            inp["camera_id"] = cam_id
+            self.config_store.save(cfg)
+        self.camera.config = cfg
+        self.pipeline = DetectionPipeline(cfg)
+        self.io = ModbusIOService(cfg)
+        return self.camera.connect_all(slot_device_ids(cfg))
+
+    def select_camera(self, camera_id: int) -> bool:
+        """切换预览用设备号：更新 camera_id 并将 slot0 接到该设备。"""
+        cfg = self.config_store.get_cached()
+        inp = cfg.setdefault("input", {})
+        cam_id = int(camera_id)
+        full = available_camera_ids(cfg)
+        if cam_id not in full:
+            full = sorted(set(full + [cam_id]))
+        inp["cameras"] = full
+        inp["camera_id"] = cam_id
+        self.config_store.save(cfg)
+        devices = slot_device_ids(cfg)
+        devices[0] = cam_id
+        self.camera.config = cfg
+        results = self.camera.connect_all(devices)
+        return results.get(0, False)
 
     async def broadcast(self, payload: dict) -> None:
         safe = json_safe(payload)
@@ -85,21 +132,29 @@ class AppState:
         for ws in dead:
             self.ws_clients.discard(ws)
 
-    def run_detection(self, image: np.ndarray) -> dict:
+    def run_detection(self, images: np.ndarray | dict[int, np.ndarray]) -> dict:
         cfg = self.config_store.get_cached()
-        if image is None:
+        if isinstance(images, dict):
+            # numpy.ndarray 不能用于 `or` 真假判断（会触发 ValueError）
+            primary = images.get(0)
+            if primary is None:
+                primary = next((f for f in images.values() if f is not None), None)
+        else:
+            primary = images
+        if primary is None:
             self.stats.record_trerr()
             self.io.write_result(False, trerr=True)
             payload = build_idle_frame(cfg, self.stats.snapshot())
             payload["error"] = "capture_failed"
             return payload
 
-        result = self.pipeline.run(image)
+        frames = images if isinstance(images, dict) else {0: images}
+        result = self.pipeline.run(frames)
         self.stats.record_success(result.passed, result.process_ms)
         self.io.write_result(result.passed)
-        save_img = result.result_image if result.result_image is not None else image
+        save_img = result.result_image if result.result_image is not None else primary
         maybe_save_result(cfg, result.passed, save_img)
-        return build_result_frame(cfg, self.stats.snapshot(), result, image)
+        return build_result_frame(cfg, self.stats.snapshot(), result, primary)
 
 
 state = AppState()
@@ -177,21 +232,42 @@ async def _preview_loop():
             continue
         if time.monotonic() < state._preview_paused_until:
             continue
-        frame = await asyncio.to_thread(state.camera.get_live_frame)
+        cfg = state.config_store.get_cached()
+        slot = camera_id_to_cam_slot(cfg)
+        frame = await asyncio.to_thread(state.camera.get_live_frame, slot)
         if frame is None:
             continue
-        payload = await asyncio.to_thread(state.build_idle_payload, frame, True)
+        payload = await asyncio.to_thread(state.build_idle_payload, frame, True, slot)
         await state.broadcast(payload)
 
 
 @app.get("/api/health")
 async def health():
     inp = state.config_store.get_cached().get("input", {})
+    cameras = available_camera_ids(state.config_store.get_cached())
     return {
         "status": "ok",
         "camera": state.camera.connected,
-        "camera_id": inp.get("camera_id", 0),
+        "camera_id": inp.get("camera_id", cameras[0] if cameras else 0),
+        "cameras": state.camera.slot_status(),
+        "available_cameras": cameras,
         "using_fallback": state.camera.using_fallback,
+    }
+
+
+@app.get("/api/camera/options")
+async def camera_options():
+    """工具栏「相机号码」：可切换设备号与当前选中项。"""
+    cfg = state.config_store.get_cached()
+    inp = cfg.get("input", {})
+    cameras = available_camera_ids(cfg)
+    camera_id = int(inp.get("camera_id", cameras[0] if cameras else 0))
+    if camera_id not in cameras and cameras:
+        camera_id = cameras[0]
+    return {
+        "cameras": cameras,
+        "camera_id": camera_id,
+        "connected": state.camera.connected,
     }
 
 
@@ -254,16 +330,55 @@ async def put_wizard_step(step: int, body: dict):
     try:
         cfg = state.config_store.save_wizard_step(step, body)
         state.reload_services()
+        if step == 1:
+            await asyncio.to_thread(state.reconnect_cameras)
+            payload = await asyncio.to_thread(state.build_idle_payload)
+            await state.broadcast(payload)
         return {"ok": True, "config": cfg}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
+def _master_slot(body: Optional[dict] = None, cam: Optional[int] = None) -> int:
+    if cam is not None:
+        return max(0, min(1, int(cam)))
+    if body and body.get("cam") is not None:
+        return max(0, min(1, int(body["cam"])))
+    return 0
+
+
+def _as_bool(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
+def _get_tool_source_image(slot: int, *, prefer_live: bool = False) -> Optional[np.ndarray]:
+    """取工具计算用图像。\n+\n+    - prefer_live=True: Live → Master（STEP3 期望使用实时画面）\n+    - prefer_live=False: Master → Live（兼容旧行为）\n+    """
+    if prefer_live:
+        img = state.camera.get_live_frame(slot)
+        if img is None:
+            img = state.calibration.load_master_image(slot)
+        return img
+    img = state.calibration.load_master_image(slot)
+    if img is None:
+        img = state.camera.get_live_frame(slot)
+    return img
+
+
 @app.post("/api/tools/hsv-area")
 async def tools_hsv_area(body: dict):
-    img = state.calibration.load_master_image()
+    slot = _master_slot(body)
+    prefer_live = _as_bool(body.get("prefer_live"))
+    img = await asyncio.to_thread(_get_tool_source_image, slot, prefer_live=prefer_live)
     if img is None:
-        raise HTTPException(400, "未注册主控图像")
+        raise HTTPException(400, f"CAM#{slot} 无可用画面（未注册主控且无 Live）")
     roi = body.get("roi") or {}
     params = body.get("params") or {}
     h_lower = params.get("h_lower") or body.get("h_lower") or [0, 0, 0]
@@ -273,9 +388,11 @@ async def tools_hsv_area(body: dict):
 
 @app.post("/api/tools/hsv-sample-roi")
 async def tools_hsv_sample_roi(body: dict):
-    img = state.calibration.load_master_image()
+    slot = _master_slot(body)
+    prefer_live = _as_bool(body.get("prefer_live"))
+    img = await asyncio.to_thread(_get_tool_source_image, slot, prefer_live=prefer_live)
     if img is None:
-        raise HTTPException(400, "未注册主控图像")
+        raise HTTPException(400, f"CAM#{slot} 无可用画面（未注册主控且无 Live）")
     roi = body.get("roi") or {}
     min_sat = int(body.get("min_saturation", 30))
     try:
@@ -288,9 +405,11 @@ async def tools_hsv_sample_roi(body: dict):
 @app.post("/api/tools/hsv-match-preview")
 async def tools_hsv_match_preview(body: dict):
     """返回 ROI 内 HSV 命中像素预览图（仅匹配像素可见，其余为黑）。"""
-    img = state.calibration.load_master_image()
+    slot = _master_slot(body)
+    prefer_live = _as_bool(body.get("prefer_live"))
+    img = await asyncio.to_thread(_get_tool_source_image, slot, prefer_live=prefer_live)
     if img is None:
-        raise HTTPException(400, "未注册主控图像")
+        raise HTTPException(400, f"CAM#{slot} 无可用画面（未注册主控且无 Live）")
     roi = body.get("roi") or {}
     params = body.get("params") or {}
     h_lower = params.get("h_lower") or body.get("h_lower") or [0, 0, 0]
@@ -309,8 +428,8 @@ async def tools_hsv_match_preview(body: dict):
 
 
 def _trigger_capture_and_detect() -> dict:
-    frame = state.camera.capture_for_trigger()
-    return state.run_detection(frame)
+    frames = state.camera.capture_all_for_trigger()
+    return state.run_detection(frames)
 
 
 @app.post("/api/trigger")
@@ -338,22 +457,25 @@ async def calibration_add():
 
 
 @app.post("/api/calibration/master")
-async def calibration_master():
-    frame = state.camera.capture_for_trigger()
+async def calibration_master(body: Optional[dict] = None):
+    body = body or {}
+    slot = _master_slot(body)
+    frame = state.camera.capture_for_trigger(slot=slot)
     if frame is None:
-        raise HTTPException(400, "无法获取图像以注册主控")
-    cal = state.calibration.register_master(frame)
+        raise HTTPException(400, f"无法从 CAM#{slot} 获取图像以注册主控")
+    cal = state.calibration.register_master(frame, slot=slot)
     state.reload_services()
-    return {"ok": True, "calibration": cal}
+    return {"ok": True, "calibration": cal, "cam": slot}
 
 
 @app.get("/api/calibration/master/image")
-async def get_master_image():
+async def get_master_image(cam: int = 0):
     from .frame_codec import encode_image_b64
 
-    img = state.calibration.load_master_image()
+    slot = max(0, min(1, int(cam)))
+    img = state.calibration.load_master_image(slot)
     if img is None:
-        raise HTTPException(404, "未注册主控图像")
+        raise HTTPException(404, f"未注册 CAM#{slot} 主控图像")
     h, w = img.shape[:2]
     quality = int(state.config_store.get_cached().get("output", {}).get("jpeg_quality", 70))
     return {
@@ -373,7 +495,140 @@ async def get_current_frame():
 async def camera_switch():
     ok = state.camera.switch()
     state.config_store.save(state.config_store.get_cached())
+    payload = await asyncio.to_thread(state.build_idle_payload)
+    await state.broadcast(payload)
     return {"ok": ok, "camera_id": state.config_store.get_cached().get("input", {}).get("camera_id")}
+
+
+@app.get("/api/cameras/live")
+async def get_camera_live(cam: int = 0):
+    from .frame_codec import encode_image_b64
+
+    slot = max(0, min(1, int(cam)))
+    frame = await asyncio.to_thread(state.camera.get_live_frame, slot)
+    if frame is None:
+        raise HTTPException(404, f"CAM#{slot} 无 Live 画面")
+    h, w = frame.shape[:2]
+    quality = int(state.config_store.get_cached().get("output", {}).get("jpeg_quality", 70))
+    return {
+        "image_base64": encode_image_b64(frame, quality),
+        "width": w,
+        "height": h,
+        "cam": slot,
+    }
+
+
+def _find_tool_config(config: dict, tool_key: str) -> Optional[dict]:
+    """按 inspections.tool（id 或 name）查找 tools 配置项。"""
+    if not tool_key:
+        return None
+    for t in (config or {}).get("tools") or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("enabled", True) is False:
+            continue
+        key = t.get("id") or t.get("name") or ""
+        if str(key) == str(tool_key):
+            return t
+    return None
+
+
+@app.get("/api/tools/image")
+async def get_tool_image(tool: str):
+    """运行模式：按 tool 返回对应 ROI 图像（裁剪后）。"""
+    cfg = state.config_store.get_cached()
+    t = _find_tool_config(cfg, tool)
+    if not t:
+        raise HTTPException(404, f"未找到工具: {tool}")
+    try:
+        slot = max(0, min(1, int(t.get("cam", 0))))
+    except (TypeError, ValueError):
+        slot = 0
+
+    img = await asyncio.to_thread(state.camera.get_live_frame, slot)
+    if img is None:
+        img = state.calibration.load_master_image(slot)
+    if img is None:
+        raise HTTPException(404, f"CAM#{slot} 无可用画面")
+
+    roi = t.get("roi") or {}
+    crop = crop_roi(img, roi)
+    if crop.img is None or crop.img.size == 0:
+        raise HTTPException(400, "ROI 越界/为空")
+
+    quality = int(cfg.get("output", {}).get("jpeg_quality", 70))
+    h, w = crop.img.shape[:2]
+    return {
+        "tool": tool,
+        "cam": slot,
+        "roi": roi,
+        "image_base64": encode_image_b64(crop.img, quality),
+        "width": w,
+        "height": h,
+    }
+
+
+@app.post("/api/cameras/reconnect")
+async def cameras_reconnect(body: Optional[dict] = None):
+    """按配置或请求体重连双路相机；cameras 为可切换设备号列表（长度 ≥ 1）。"""
+    body = body or {}
+    cameras = body.get("cameras")
+    if cameras is not None:
+        try:
+            cameras = sorted({int(c) for c in cameras})
+            if not cameras:
+                raise ValueError("empty")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "cameras 需为至少含 1 个设备号的列表") from exc
+    elif body.get("slot") is not None and body.get("device_id") is not None:
+        slot = max(0, min(1, int(body["slot"])))
+        current = slot_device_ids(state.config_store.get_cached())
+        current[slot] = int(body["device_id"])
+        cameras = current
+    else:
+        cameras = None
+
+    results = await asyncio.to_thread(state.reconnect_cameras, cameras)
+    payload = await asyncio.to_thread(state.build_idle_payload)
+    await state.broadcast(payload)
+    return {
+        "ok": any(results.values()),
+        "results": {str(k): v for k, v in results.items()},
+        "cameras": state.camera.slot_status(),
+        "available_cameras": available_camera_ids(state.config_store.get_cached()),
+    }
+
+
+@app.post("/api/camera/select")
+async def camera_select(body: dict):
+    """兼容旧 API：按 CAM#（1 起）或 camera_id 更新 slot0。"""
+    cam = body.get("cam")
+    camera_id = body.get("camera_id")
+    if cam is not None:
+        try:
+            camera_id = max(0, int(cam) - 1)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "无效的 cam") from exc
+    elif camera_id is None:
+        raise HTTPException(400, "需要 cam 或 camera_id")
+    else:
+        try:
+            camera_id = int(camera_id)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "无效的 camera_id") from exc
+
+    ok = await asyncio.to_thread(state.select_camera, int(camera_id))
+    payload = await asyncio.to_thread(state.build_idle_payload)
+    await state.broadcast(payload)
+    cfg = state.config_store.get_cached()
+    return {
+        "ok": ok,
+        "connected": state.camera.is_connected(0),
+        "camera_id": int(camera_id),
+        "cam": int(camera_id) + 1,
+        "cameras": state.camera.slot_status(),
+        "available_cameras": available_camera_ids(cfg),
+    }
 
 
 @app.websocket("/ws/frame")

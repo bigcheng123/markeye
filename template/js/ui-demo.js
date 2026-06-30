@@ -105,7 +105,7 @@ export async function runUiDemo(app) {
     if (app.getView() !== "wizard") throw new Error("未能进入向导");
   });
 
-  await step("向导 STEP1 — AI拍摄", async () => {
+  await step("向导 STEP1 — 拍摄", async () => {
     document.querySelector('[data-action="ai-shoot"]')?.click();
     await delay(400);
     document.querySelector("#wizard-next")?.click();

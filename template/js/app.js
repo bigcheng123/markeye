@@ -35,6 +35,10 @@ class MarkEyeApp {
     this.livePreviewStarted = false;
     this._ignoreIdleUntil = 0;
     this.api = null;
+    this._mockCameras = [0, 1, 2];
+    this._mockCameraId = 0;
+    this._lastCameraList = [0, 1, 2];
+    this._toolPreview = { active: false, tool: null };
 
     this.statusBar = new StatusBar();
     this.toolPanel = new ToolPanel();
@@ -50,8 +54,98 @@ class MarkEyeApp {
     this._bindModeTabs();
     this._bindGlobalActions();
     this._bindRunActions();
+    this._bindCameraSelect();
     this._bindKeyboard();
+    this._bindToolPreview();
     initLayout();
+  }
+
+  _deviceIdToCamSlot(deviceId, cameras = this._lastCameraList) {
+    const list = Array.isArray(cameras) && cameras.length ? cameras : [0, 1];
+    const id = parseInt(deviceId, 10);
+    const idx = list.indexOf(id);
+    return idx >= 0 ? Math.min(1, idx) : 0;
+  }
+
+  _applyPreviewCamForDevice(deviceId, cameras = this._lastCameraList) {
+    const slot = this._deviceIdToCamSlot(deviceId, cameras);
+    this.imageViewer?.setPreviewCamSlot?.(slot);
+    this.imageViewer?.refreshOverlays?.();
+  }
+
+  _isCameraSelectEnabled() {
+    return this.view === "run" || (this.view === "wizard" && this.previewMode === "live");
+  }
+
+  _updateCameraSelectDisabled() {
+    const sel = document.querySelector("#camera-select");
+    if (sel) sel.disabled = !this._isCameraSelectEnabled();
+  }
+
+  async syncCameraSelect(override = null) {
+    const sel = document.querySelector("#camera-select");
+    if (!sel) return;
+
+    let cameras = [0, 1, 2];
+    let cameraId = 0;
+
+    if (override?.cameras) {
+      cameras = override.cameras;
+      cameraId = override.camera_id ?? cameras[0];
+    } else if (isMockMode()) {
+      cameras = this._mockCameras || [0, 1, 2];
+      cameraId = this._mockCameraId ?? cameras[0];
+    } else {
+      try {
+        const data = await this.api?.get?.("/api/camera/options");
+        if (Array.isArray(data?.cameras) && data.cameras.length) cameras = data.cameras;
+        if (data?.camera_id != null) cameraId = data.camera_id;
+      } catch {
+        /* 保持默认 */
+      }
+    }
+
+    if (!cameras.includes(cameraId)) cameraId = cameras[0];
+
+    this._lastCameraList = cameras;
+    this._applyPreviewCamForDevice(cameraId, cameras);
+
+    const prev = parseInt(sel.value, 10);
+    sel.innerHTML = cameras
+      .map((id) => `<option value="${id}">${id}</option>`)
+      .join("");
+    sel.value = String(cameraId);
+    this._updateCameraSelectDisabled();
+
+    if (prev !== cameraId && this._isCameraSelectEnabled() && !isMockMode()) {
+      await this.api?.pullCurrentFrame?.();
+    }
+  }
+
+  async _onCameraSelectChange(cameraId, { silent = false } = {}) {
+    if (!Number.isFinite(cameraId)) return;
+    this._applyPreviewCamForDevice(cameraId);
+    if (isMockMode()) {
+      this._mockCameraId = cameraId;
+      await this.syncCameraSelect({ cameras: this._mockCameras || [0, 1, 2], camera_id: cameraId });
+      return;
+    }
+    try {
+      await this.api?.post?.("/api/camera/select", { camera_id: cameraId });
+      await this.api?.pullCurrentFrame?.();
+      await this.syncCameraSelect();
+      if (!silent) showToast(`已切换至相机 ${cameraId}`, "ok");
+    } catch {
+      if (!silent) showToast("相机切换失败", "err");
+      await this.syncCameraSelect();
+    }
+  }
+
+  _bindCameraSelect() {
+    document.querySelector("#camera-select")?.addEventListener("change", (e) => {
+      const cameraId = parseInt(e.target.value, 10);
+      this._onCameraSelectChange(cameraId);
+    });
   }
 
   start() {
@@ -70,6 +164,7 @@ class MarkEyeApp {
     });
     this._loadProfiles();
     this._setView("run");
+    this.syncCameraSelect();
     requestAnimationFrame(() => {
       this.imageViewer.fitToScreen();
       requestAnimationFrame(() => this.imageViewer.fitToScreen());
@@ -93,12 +188,14 @@ class MarkEyeApp {
           if (data.overall?.passed === false) playNgAlert();
           this.statusBar.update(data);
           this.imageViewer.updateFrame(data);
+          this.toolPanel?.update?.(data);
         }
         return;
       }
       if (this.previewMode !== "live") return;
       this.statusBar.update(data);
       this.imageViewer.updateFrame(data);
+      this.toolPanel?.update?.(data);
       return;
     }
     if (this.view !== "run") return;
@@ -109,8 +206,48 @@ class MarkEyeApp {
       playNgAlert();
     }
     this.statusBar.update(data);
-    this.imageViewer.updateFrame(data);
+    // 工具预览激活时：保持主画面显示工具对应图像，不被实时帧覆盖
+    if (!this._toolPreview?.active) {
+      this.imageViewer.updateFrame(data);
+    }
     this.toolPanel.update(data);
+  }
+
+  _bindToolPreview() {
+    this.toolPanel.onToolSelect = async (tool) => {
+      if (this.view !== "run") return;
+      if (!tool) {
+        this._toolPreview = { active: false, tool: null };
+        this.imageViewer.clearVerdict?.();
+        if (!isMockMode()) {
+          await this.api?.pullCurrentFrame?.();
+        } else {
+          this._onFrame(createIdleFrame());
+        }
+        return;
+      }
+      await this.showToolPreview(tool);
+    };
+  }
+
+  async showToolPreview(tool) {
+    this._toolPreview = { active: true, tool };
+    if (isMockMode()) {
+      // Mock 模式下回退为显示当前帧（避免无后端接口）
+      this._toolPreview = { active: false, tool: null };
+      showToast("Mock 模式暂不支持工具图像预览", "warn");
+      return;
+    }
+    try {
+      const data = await this.api.get(`/api/tools/image?tool=${encodeURIComponent(tool)}`);
+      const slot = data?.cam != null ? data.cam : 0;
+      this.imageViewer?.setPreviewCamSlot?.(slot);
+      this.imageViewer.clearVerdict?.();
+      this.imageViewer.updateFrame(this._buildMasterPayload(data, slot));
+      showToast(`已显示 Tool ${tool} 对应图像`, "ok");
+    } catch {
+      showToast("工具图像获取失败", "err");
+    }
   }
 
   async _loadProfiles() {
@@ -140,6 +277,7 @@ class MarkEyeApp {
     if (view === "run") {
       this.wizard.hide();
       this._stopWizardPreview();
+      this._toolPreview = { active: false, tool: null };
       this.statusBar.setWaiting();
       if (!this.api?._connected) {
         this.api?.start();
@@ -150,19 +288,27 @@ class MarkEyeApp {
       if (isMockMode()) {
         this._onFrame(createIdleFrame());
       }
+      this.syncCameraSelect();
+      this._updateCameraSelectDisabled();
     } else if (view === "set") {
       this.wizard.hide();
       this._stopWizardPreview();
+      this._toolPreview = { active: false, tool: null };
       this.api?.stop();
       this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
+      this.syncCameraSelect();
+      this._updateCameraSelectDisabled();
     } else if (view === "wizard") {
       this.wizard.show();
       this.previewMode = "off";
       this.livePreviewStarted = false;
+      this._toolPreview = { active: false, tool: null };
       this.imageViewer.disableRoiEditor?.();
       this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
+      this.syncCameraSelect();
+      this._updateCameraSelectDisabled();
     }
   }
 
@@ -202,44 +348,70 @@ class MarkEyeApp {
     }
 
     if (step >= 3) {
+      // STEP3 起使用 CAM# 对应 Live 画面做 ROI 设定，不再依赖 STEP2 注册的主控图像。
+      // 仍停止连续 Live Preview（如果有），但保持 wizard 内可更新预览。
       this.api?.stopLivePreview?.();
-      this.previewMode = "master";
-      await this._showMasterPreview();
+      this.previewMode = "live";
+      const cam = this.wizard?.getSelectedToolCam?.() ?? 0;
+      await this.showLivePreviewSlot(cam);
       this.wizard.enableStep3Roi?.();
     }
   }
 
-  async _showMasterPreview() {
-    if (this.masterFrame) {
-      this.imageViewer.updateFrame(this._buildMasterPayload(this.masterFrame));
-      this.statusBar.setWaiting();
-      return;
-    }
+  getSelectedToolCam() {
+    return this.wizard?.getSelectedToolCam?.() ?? 0;
+  }
+
+  async showMasterPreview(cam = 0) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
+    this.imageViewer?.setPreviewCamSlot?.(slot);
     try {
-      const img = await this.api.get("/api/calibration/master/image");
-      this.cacheMasterFrame(img);
-      this.imageViewer.updateFrame(this._buildMasterPayload(img));
+      const img = await this.api.get(`/api/calibration/master/image?cam=${slot}`);
+      this.cacheMasterFrame(img, slot);
+      this.imageViewer.updateFrame(this._buildMasterPayload(img, slot));
       this.statusBar.setWaiting();
     } catch {
-      showToast("无法加载主控图像", "err");
+      showToast(`无法加载 CAM#${slot} 主控图像`, "err");
       this.imageViewer.updateFrame(createIdleFrame());
     }
   }
 
-  cacheMasterFrame(img) {
+  async showLivePreviewSlot(slot = 0) {
+    const cam = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
+    this.imageViewer?.setPreviewCamSlot?.(cam);
+    if (isMockMode()) {
+      this.api.startLivePreview?.();
+      return;
+    }
+    try {
+      const data = await this.api.get(`/api/cameras/live?cam=${cam}`);
+      if (data?.image_base64) {
+        this.imageViewer.updateFrame(this._buildMasterPayload(data, cam));
+        this.statusBar.setWizardLive();
+      }
+    } catch {
+      showToast(`无法预览 CAM#${cam} Live 画面`, "warn");
+    }
+  }
+
+  cacheMasterFrame(img, slot = 0) {
+    if (!this._masterFrames) this._masterFrames = {};
+    this._masterFrames[slot] = img;
     this.masterFrame = img;
     this.hasMasterRegistered = true;
   }
 
-  _buildMasterPayload(img) {
+  _buildMasterPayload(img, camSlot = 0) {
     if (isMockMode()) {
       return createMasterFramePayload(img);
     }
+    const slot = Math.max(0, Math.min(1, parseInt(camSlot, 10) || 0));
     return {
       type: "frame",
       timestamp: new Date().toISOString(),
       idle: true,
       overall: { passed: null },
+      preview_cam: slot,
       frame: {
         width: img.width,
         height: img.height,
@@ -259,37 +431,44 @@ class MarkEyeApp {
       this.api.reconnect();
       this.api.startLivePreview();
     } else {
+      if (this.view === "wizard" && this.wizard?.step === 1) {
+        await this.wizard.applyStep1Cameras({ silent: true });
+      }
       this.api.reconnect();
+      await this.api.pullCurrentFrame();
     }
     this.livePreviewStarted = true;
     this.previewMode = "live";
     this.statusBar.setWizardLive();
     this.imageViewer.setWaiting(false, { livePreview: true });
+    this._updateCameraSelectDisabled();
+    await this.syncCameraSelect();
     showToast("Live 预览已启动", "ok");
   }
 
-  async registerLiveMaster() {
+  async registerLiveMaster(cam = 0) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
     if (!this.livePreviewStarted && !isMockMode()) {
-      showToast("请先点击 AI拍摄 启动 Live 预览", "err");
+      showToast("请先点击 拍摄 启动 Live 预览", "err");
       return;
     }
     try {
       if (isMockMode()) {
         const img = captureMockMasterFromLive();
         registerMaster();
-        this.cacheMasterFrame(img);
+        this.cacheMasterFrame(img, slot);
       } else {
-        await this.api.post("/api/calibration/master");
-        const img = await this.api.get("/api/calibration/master/image");
-        this.cacheMasterFrame(img);
+        await this.api.post("/api/calibration/master", { cam: slot });
+        const img = await this.api.get(`/api/calibration/master/image?cam=${slot}`);
+        this.cacheMasterFrame(img, slot);
       }
       this.api?.stopLivePreview?.();
       this.previewMode = "master";
       this.imageViewer.updateFrame(this._buildMasterPayload(this.masterFrame));
       this.statusBar.setWaiting();
-      showToast("已注册 Live 图像为主控", "ok");
+      showToast(`已注册 CAM#${slot} Live 图像为主控`, "ok");
     } catch {
-      showToast("注册主控图像失败", "err");
+      showToast(`注册 CAM#${slot} 主控图像失败`, "err");
     }
   }
 
@@ -314,6 +493,8 @@ class MarkEyeApp {
     if (name === prev) return;
 
     await this.api.post("/api/config/switch", { name });
+
+    await this.syncCameraSelect();
 
     if (this.view === "wizard") {
       const step = this.wizard.step;
@@ -453,8 +634,20 @@ class MarkEyeApp {
       if (!action || this.view !== "wizard") return;
 
       const handlers = {
-        "ai-shoot": () => this.startLivePreview(),
-        "register-live": () => this.registerLiveMaster(),
+        "ai-shoot": async (e) => {
+          const row = e.target.closest(".wizard-camera-row");
+          const cameraId = row
+            ? parseInt(row.querySelector('[data-field="camera-id"]')?.value, 10)
+            : NaN;
+          if (Number.isFinite(cameraId)) {
+            await this._onCameraSelectChange(cameraId, { silent: true });
+          }
+          return this.startLivePreview();
+        },
+        "register-live": (e) => {
+          const cam = parseInt(e.target.closest("[data-action]")?.dataset?.cam, 10);
+          return this.registerLiveMaster(Number.isFinite(cam) ? cam : 0);
+        },
         "register-file": async () => {
           if (isMockMode()) {
             registerMaster();
@@ -468,7 +661,7 @@ class MarkEyeApp {
         logic: () => showToast(`打开逻辑 ${e.target.dataset.n} 编辑器（Mock）`, "ok"),
       };
 
-      if (handlers[action]) await handlers[action]();
+      if (handlers[action]) await handlers[action](e);
     });
   }
 
@@ -483,6 +676,9 @@ class MarkEyeApp {
       // post() 已调用 onFrame；此处仅补 toast（避免重复处理）
       if (!frame.idle && frame.overall?.passed != null) {
         showToast(`触发完成 — ${frame.overall.passed ? "OK" : "NG"}`, frame.overall.passed ? "ok" : "err");
+      }
+      if (!frame.idle && (!Array.isArray(frame.inspections) || frame.inspections.length === 0)) {
+        showToast("未收到工具判定结果：请确认 STEP3 已保存且 STEP2 已注册主控图像", "warn");
       }
     }
   }
