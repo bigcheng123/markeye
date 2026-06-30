@@ -1,153 +1,47 @@
 # MarkEye — 产品标记视觉检测系统
 
-基于 **Python + OpenCV** 的视觉检测系统，用于检测产品上的标记是否合格。
+基于 **Python + OpenCV** 的产线视觉检测系统，用于检测产品上的标记是否合格（颜色 / 面积 / 位置）。
 
 ## 系统边界
 
-MarkEye 是产线上的**视觉检测子系统**，负责采图、检测、结果显示与履历记录，**不包含**印记加工设备的控制。步骤 1 为产线整体流程背景；MarkEye 负责步骤 2–5。
-
-## 使用场景
-
-| 步骤 | 内容 |
-|------|------|
-| 1. 加工标记（产线背景） | 作业员将未打标记的产品放入定位治具，按下启动按钮；外部设备自动对产品加工标记 |
-| 2. 拍摄图像 | 标记加工完毕后，CAMERA 捕获标记位置的图片 |
-| 3. 检测目标 | 检测图像中标记的**颜色**是否正确、**面积**是否达标、**位置**（中心偏移）是否在允许范围内 |
-| 4. 返回结果 | UI 在 Tool 行 verdict 与 RunFooter 触发统计表显示 **OK** / **NG**（无独立大 OK 方块）；Tool 详情可查看面积与颜色 HSV；NG 时发出报警声音 |
-| 5. 记录结果 | 统计检查总数、OK 数量、NG 数量；可选保存图像（仅 OK / 仅 NG / 全部） |
-
-### 履历统计说明
-
-| 字段 | 含义 |
-|------|------|
-| 检查总数 | 成功完成一次「触发 → 采图 → 判定」的次数 |
-| OK / NG | 视觉判定合格 / 不合格的次数 |
-| TrERR（触发错误） | 触发后未能完成检测（如相机断连、采图失败），**不计入** OK/NG |
-| NG 数量 | 与「检查失败次数（视觉 NG）」为同一指标；TrERR 单独统计 |
-
-图像默认保存目录与命名规则见 `config/config.yaml` 中 `output.save_dir`；是否自动保存由 `output.save_result` 控制，产线 UI 可覆盖为「仅 NG 保存」等策略。
-
-## 实际生产中的运行平台
-
-- OS：Ubuntu 24.04.4 LTS
-- CPU：Intel J1900，4 核心 2.0 GHz
-- 内存：DDR3 2 GB
-- 硬盘：SATA 120 GB
-- 测试样品图片：`data/sample.jpg`（需自行放置；仓库暂未附带 `data/` 目录）
-- IO 控制：Modbus 协议（详见下方 [IO 与 STEP4](#io-与-step4)）
-
-> **性能提示**：2 GB 内存环境下建议关闭 `--debug` 窗口，按 [`plan/UI设计稿.md`](plan/UI设计稿.md) 目标控制预览帧率（≥15 fps）与处理分辨率。
+MarkEye 是产线上的**视觉检测子系统**，负责采图、检测、结果显示与履历记录，**不包含**印记加工设备的控制。
 
 ## 软件形态
 
-| 形态 | 用途 | 状态 |
-|------|------|------|
-| **Web UI**（`template/`） | 产线触摸屏操作：设定模式向导、自动运行、履历与 IO | 原型 / 开发中 |
-| **Python CLI**（`src/main.py`） | 开发调参、单张/批量/相机验证检测算法 | 已实现 |
-| **Web 服务**（`src/web_server.py`） | 产线部署：静态 UI + WebSocket 推帧 + REST API | 已实现 |
+| 形态 | 入口 | 用途 | 状态 |
+|------|------|------|------|
+| **Web 服务** | `python -m src.web_server` | 产线部署：双路相机采集、WebSocket 实时推帧、REST API、四步设定向导 | ✅ 已实现 |
+| **Web UI** | `template/index.html` | 产线触摸屏操作：RUN/SET 模式切换、工具面板、履历统计、IO 监控 | ✅ 已实现 |
+| **Python CLI** | `python src/main.py` | 开发调参、单张/批量/相机验证检测算法 | ✅ 已实现 |
 
-产线部署以 Web UI 为主；CLI 用于离线验证与 CI 测试。UI 交互与布局详见 [`plan/UI设计稿.md`](plan/UI设计稿.md)，参考截图见 `ui/ui_sample/`。
-
-## 软件使用方法
-
-### 1. 两种模式
-
-APP 共有 **设定模式** 与 **自动运行** 两种模式：
-
-- **设定模式**：CAMERA 停止连续采集，人工配置当前程序（配方）参数
-- **自动运行**：生产模式；收到启动信号（内部软触发或外部 IO）后触发拍照与检查
-
-### 2. 设置产品配方（程序）
-
-每个**程序**对应一份配方配置文件（如 `config/config.yaml` 或 `config.local.yaml`）。
-
-2.1 进入 **设定模式** → 选择程序 → **传感器设定** 进入向导
-
-2.2 向导共 4 个环节：
-
-| 步骤 | 内容 |
-|------|------|
-| STEP1 拍摄条件 | 曝光时间、触发方式（内部 / 外部 IO）等 |
-| STEP2 注册主控 | 注册主控图片，供 STEP3 设定各检测区域的 ROI 与参考位置 |
-| STEP3 工具设定 | 配置 MVP 三项检查（见下表） |
-| STEP4 输出分配 | OUT/I/O 映射、综合判定逻辑、OK/NG 程序切换等（详见 [UI 设计稿 — STEP4](plan/UI设计稿.md)） |
-
-**STEP3 — MVP 检测项**（与 `config/config.yaml` 中 `inspect.*` 对应）：
-
-| 检查项 | 说明 | 配置字段 |
-|--------|------|----------|
-| 颜色 | 指定区域内颜色是否在 HSV/RGB 阈值内 | `inspect.colors`、`color_space` |
-| 面积 | 标记面积是否在允许偏差内 | `inspect.size_tolerance` |
-| 位置 | 标记中心相对主控参考点的偏移是否在容差内 | `inspect.position_tolerance` |
-
-> STEP3 中的「轮廓」用于 **ROI 定位与标记区域提取**（`detector` 阶段），形状匹配（矩形/圆、匹配度阈值）为**规划中**能力，与上述「位置偏移」检查不同。
-
-2.3 **保存设置**：向导完成后自动存储当前程序配方参数。
-
-### 3. 运行检测
-
-- **内部触发**：点击主页「触发」按钮，捕获当前帧并判定
-- **外部触发**：由 Modbus/IO 启动信号触发（与 STEP4 输入映射一致）
-
-### IO 与 STEP4
-
-MarkEye 通过 **Modbus** 与 PLC/IO 模块通信（具体主从角色与寄存器地址在产线联调时定稿）。典型信号如下：
-
-| 方向 | 信号 | 说明 |
-|------|------|------|
-| 输入 | 启动 / 触发 | 外部触发拍照与检测（对应 UI「外部触发」） |
-| 输入 | 急停等 | 可选，由 STEP4 I/O 映射配置 |
-| 输出 | OK / NG | 综合判定结果驱动产线分拣或报警 |
-| 输出 | 就绪 / 忙 | 可选，表示系统可接受下一次触发 |
-
-STEP4 完整能力（OUT1~3、I/O1~3、综合判定逻辑 1~4、OK/NG 自动切换程序等）见 [`plan/UI设计稿.md`](plan/UI设计稿.md) 中 STEP4 章节与 `ui/ui_sample/set-4*.PNG`。
-
-## 检测项（MVP）
-
-| 维度 | 判定方式 | 配置 |
-|------|----------|------|
-| 颜色 | HSV（或 RGB）阈值匹配 | `inspect.colors` |
-| 面积 | 相对标准面积的偏差比例 | `inspect.size_tolerance` |
-| 位置 | 中心点像素偏移 | `inspect.position_tolerance` |
-
-## 功能
-
-- ✅ 标记**颜色**检测（HSV 色彩空间匹配）
-- ✅ 标记**大小**检测（面积偏差判定）
-- ✅ 标记**位置**检测（中心偏移量判定）
-- ✅ 图片模式 / 相机实时模式 / 批量模式（CLI）
-- ✅ YAML 配置驱动，无需改代码调参
-- ✅ 调试模式显示中间处理步骤
-- 🚧 Web UI 设定向导与产线运行界面（`template/`）— 联调中
-- ✅ Web 服务（`web_server.py`）+ REST/WebSocket
-- 🚧 Modbus IO 联调（占位实现）
-- ✅ NG 报警音（WebAudio）
-- ✅ 履历统计持久化（JSON）
-
-## 实现状态
-
-| 模块 | 状态 |
-|------|------|
-| 预处理 / 检测 / 检查（CLI） | 已实现 |
-| 颜色、面积、位置判定 | 已实现 |
-| 检测管线 `pipeline.py` | 已实现 |
-| Web 服务 `web_server.py` | 已实现 |
-| Tool 聚合 / 统计 / 标定 | 已实现 |
-| 形状匹配 Tool | 规划中 |
-| Web UI | 原型 / 联调中 |
-| Modbus IO | 占位（联调定址） |
-| NG 报警音 | 已实现（前端 WebAudio） |
-| 履历统计持久化 | 已实现（JSON） |
+产线部署以 Web 服务为主；CLI 用于离线验证与 CI 测试。
 
 ## 快速开始
 
-以下命令用于**开发环境**验证算法（Windows / Ubuntu 均可）：
+### 开发环境（Windows）
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### 部署环境（Ubuntu 24.04.4 LTS）
 
 ```bash
-# 安装依赖
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-# 单张图片检测（需先放置 data/sample.jpg）
+### 使用方式
+
+```bash
+# Web 服务（产线模式）
+python -m src.web_server
+# 浏览器打开 http://localhost:8080 ；开发 Mock 附加 ?mock=1
+
+# 单张图片检测
 python src/main.py --image data/sample.jpg
 
 # 相机实时检测
@@ -156,82 +50,263 @@ python src/main.py --camera 0
 # 批量处理
 python src/main.py --batch data/samples/
 
-# 调试模式（显示中间图像）
+# 调试模式（显示中间处理步骤）
 python src/main.py --image data/sample.jpg --debug
 
-# Web UI 服务（产线部署）
-python -m src.web_server
-# 浏览器打开 http://localhost:8080/template/ ；开发 Mock：?mock=1
+# 指定配置文件
+python src/main.py --image test.jpg --config config/config.yaml
 ```
 
-### Web 服务模式
+### 测试
 
-产线以 `python -m src.web_server` 启动（默认端口 8080），提供：
+```bash
+pytest tests/
+pytest tests/test_detector.py -v
+pytest tests/ --cov=src
+```
 
-- 静态资源：`template/`、`icon/`
-- WebSocket：`/ws/frame` — 实时帧与检测结果（见 UI 设计稿 §9）
-- REST：`/api/trigger`、`/api/config`、`/api/stats/reset` 等
+## 使用场景
 
-CLI 与 Web 服务共用 `src/pipeline.py` 检测管线。
+| 步骤 | 内容 |
+|------|------|
+| 1. 加工标记 | 作业员将产品放入定位治具，按下启动按钮；外部设备自动加工标记 |
+| 2. 拍摄图像 | 标记加工完毕后，相机捕获标记位置图片 |
+| 3. 检测目标 | 检测标记的**颜色**（HSV 匹配面积）、**面积**（是否达标）、**位置**（中心偏移） |
+| 4. 返回结果 | UI 显示 OK / NG 判定，Tool 面板展示各工具详情，NG 时触发报警音 |
+| 5. 记录结果 | 持久化统计总数、OK、NG、TrERR，支持按策略保存检测图像 |
+
+### 履历统计
+
+| 字段 | 含义 |
+|------|------|
+| 检查总数 | 成功完成「触发 → 采图 → 判定」的次数 |
+| OK / NG | 视觉判定合格 / 不合格的次数 |
+| TrERR | 触发后未能完成检测（相机断连、采图失败等），不计入 OK/NG |
+
+## 两种运行模式
+
+### 设定模式（SET）
+
+停止连续采集，进入四步向导配置当前程序：
+
+| 步骤 | 内容 | 关键配置项 |
+|------|------|-----------|
+| **STEP1** 拍摄条件 | 曝光时间、触发方式（内部/外部 IO）、相机设备号 | `input.cameras`, `input.exposure`, `trigger.source` |
+| **STEP2** 注册主控 | 拍摄/上传主控图像（CAM#0 / CAM#1 分槽位），按程序存档 | `calibration.masters` |
+| **STEP3** 工具设定 | 配置检测工具：HSV 色彩识别 / 轮廓形状匹配，设定 ROI 与判定阈值 | `tools[]` |
+| **STEP4** 输出分配 | OUT 线圈映射、综合判定逻辑、OK/NG 自动切换程序 | `io.outputs`, `io.comprehensive_logic` |
+
+### 自动运行（RUN）
+
+生产模式。收到触发信号（UI 软触发或外部 IO）后执行：采图 → 运行全部检测工具 → 综合判定 → 输出 IO 信号 → 更新履历。
+
+## 检测工具
+
+系统采用 **工具（Tool）模型**，每个工具独立配置 ROI、判定参数，按 `cam` 字段绑定相机槽位：
+
+| 工具类型 | 说明 | 配置字段 |
+|---------|------|----------|
+| `hsv_roi` | ROI 内 HSV 颜色匹配面积判定 | `h_lower`, `h_upper`, `match_area_min`, `match_area_max` |
+| `contour_roi` | ROI 内形状检测（矩形/圆），含尺寸与位置容差判定 | `target_shape`, `min_area`, `size_tolerance`, `position_tolerance` |
+
+工具结果按 `io.comprehensive_logic` 综合判定：
+- **逻辑 1/2**：全部工具 OK 则综合 OK
+- **逻辑 3**：任一工具 OK 即综合 OK（占位）
+
+## 双路相机架构
+
+```
+CAM #1 (slot1)  ──→  采集线程 (daemon)  ──→  slot0.latest_frame
+CAM #2 (slot2)  ──→                         ──→  slot1.latest_frame
+                                              ↓
+                              WebSocket /ws/frame 实时推送
+                              REST /api/trigger 触发检测
+```
+
+- 两路逻辑槽位（slot 0/1），每槽位映射一个 OpenCV 设备号
+- 后台守护线程持续抓帧，预览约 10fps
+- API 可动态切换设备号、重连相机
+- 无相机时自动回退到 `fallback_image`（测试用）
+
+## IO 与 STEP4
+
+通过 **Modbus TCP** 与 PLC/IO 模块通信（联调前 Mock 线圈写入）：
+
+| 方向 | 信号 | 说明 |
+|------|------|------|
+| 输入 | 启动 / 触发 | 外部触发拍照与检测 |
+| 输出 | OK / NG | 综合判定结果驱动分拣或报警 |
+| 输出 | 就绪 / 忙 | 系统状态指示 |
+| 输出 | TrERR | 触发错误（采图失败等）不计入 OK/NG |
+
+联调前 IO 以日志模式运行（`io.enabled: false`，写入 `logging.DEBUG`）。
+
+## 多程序（配方）管理
+
+- 每个程序对应 `config/` 目录下一个 `.yaml` 文件
+- 主控图像按程序分目录存档：`data/masters/<程序名>/master_cam{0,1}.jpg`
+- API 支持切换程序：`POST /api/config/switch { "name": "program.yaml" }`
+- 切换后自动重载相机、管线、IO 服务
 
 ## 项目结构
 
 ```
 markeye/
-├── src/                     # 检测算法（CLI 入口）
-│   ├── main.py              # 入口（CLI 解析、调度）
-│   ├── preprocessor.py      # 预处理（灰度、去噪、二值化、透视校正）
-│   ├── detector.py          # 检测器（轮廓提取、标记定位）
-│   ├── inspector.py         # 检查器（颜色/大小/位置判定）
-│   └── utils.py             # 工具函数（绘图、文件 IO、日志）
-├── template/                # Web UI 原型（HTML/JS/CSS）
-├── ui/ui_sample/            # UI 参考截图（对标 Keyence IV3）
-├── plan/                    # 设计文档（UI设计稿.md 等）
+├── src/                         # 源码
+│   ├── main.py                  # CLI 入口（单张/相机/批量模式）
+│   ├── web_server.py            # FastAPI Web 服务（REST + WebSocket）
+│   ├── pipeline.py              # 检测管线（CLI 与 Web 共用）
+│   ├── preprocessor.py          # 图像预处理（灰度/去噪/二值化/形态学）
+│   ├── detector.py              # 轮廓检测与标记定位
+│   ├── inspector.py             # 颜色/大小/位置判定
+│   ├── calibration.py           # 主控图像注册与管理（按程序分槽位）
+│   ├── camera_config.py         # 双相机槽位配置与迁移
+│   ├── camera_service.py        # 双路相机采集服务（后台抓帧线程）
+│   ├── config_store.py          # YAML 配置读写与多程序管理
+│   ├── stats_store.py           # 检测统计与 JSON 持久化
+│   ├── tool_builder.py          # Pipeline 结果 → Web UI inspections 聚合
+│   ├── display_images.py        # 工具二值化/HSV命中叠加图生成
+│   ├── frame_codec.py           # 帧编解码（Base64 JPEG）、结果保存
+│   ├── version.py               # 应用版本号（基于 git 提交数）
+│   ├── utils.py                 # 通用工具（绘图/IO/日志）
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   └── roi_tools.py         # ROI 工具执行（HSV 面积 / 轮廓形状）
+│   └── io/
+│       ├── __init__.py
+│       └── modbus_client.py     # Modbus IO 客户端（联调前占位）
 ├── config/
-│   └── config.yaml          # 检测参数配置（颜色阈值、面积范围、位置公差）
-├── data/                    # 样本图像（需自行添加）
-├── tests/                   # 单元测试
+│   └── config.yaml              # 默认配方（检测参数/工具/IO/输出）
+├── template/                    # Web UI 前端
+│   ├── index.html               # SPA 入口（RUN/SET 模式）
+│   ├── js/                      # 前端模块
+│   │   ├── app.js               # 主应用
+│   │   ├── api-client.js        # REST 客户端
+│   │   ├── wizard.js            # 四步向导
+│   │   ├── tool-panel.js        # 工具面板
+│   │   ├── image-viewer.js      # 图像查看器
+│   │   ├── config-editor.js     # 配置编辑器
+│   │   ├── set-menu.js          # 设定菜单
+│   │   ├── ng-alert.js          # NG 报警音
+│   │   ├── status-bar.js        # 状态栏
+│   │   ├── mock-data.js         # 开发 Mock 数据
+│   │   ├── ui-demo.js           # UI 演示
+│   │   └── layout.js            # 布局管理
+│   ├── css/
+│   │   ├── variables.css        # CSS 变量
+│   │   ├── layout.css           # 布局样式
+│   │   ├── components.css       # 组件样式
+│   │   └── theme-industrial.css # 工业风主题
+│   └── test-autodemo.mjs        # 自动演示测试
+├── icon/                        # SVG 图标（菜单/模式/状态/操作）
+├── data/                        # 样本图像与主控存档（需自行添加）
+│   └── masters/                 # 主控图像（按程序分目录）
+├── tests/                       # 单元测试（Pytest）
+│   ├── test_detector.py
+│   ├── test_inspector.py
+│   ├── test_preprocessor.py
+│   ├── test_pipeline.py
+│   ├── test_web_server.py
+│   ├── test_web_master.py
+│   ├── test_roi_tools.py
+│   ├── test_tool_builder.py
+│   ├── test_calibration_masters.py
+│   ├── test_camera_config.py
+│   ├── test_camera_service.py
+│   ├── test_config_store.py
+│   ├── test_display_images.py
+│   └── test_frame_codec.py
+├── plan/                        # 设计文档
 ├── requirements.txt
-└── CLAUDE.md
+├── CLAUDE.md
+└── README.md
 ```
 
 ## 检测流程
 
 ```
-输入图像 → 预处理(Preprocessor) → 检测(Detector) → 检查(Inspector) → 结果
-                                    ↓                   ↓
-                             轮廓/ROI 定位        颜色/面积/位置判定
+输入图像（BGR）
+    │
+    ├──→ Preprocessor: 灰度化 → 高斯去噪 → 二值化(Otsu) → 形态学去噪
+    │         ↓
+    ├──→ Detector: 轮廓查找 → 面积/尺寸过滤 → 输出标记位置
+    │         ↓
+    ├──→ Inspector: HSV 颜色匹配 → 面积偏差 → 中心偏移 → Pass/Fail
+    │
+    └──→ ROI Tools: 按 cam 取帧 → ROI 裁剪 → 工具判定
+              ↓
+        综合判定（comprehensive_logic）
+              ↓
+        结果输出（UI / IO / 履历）
 ```
-
-- **Preprocessor**: 灰度化 → 高斯去噪 → 二值化(Otsu/自适应) → 形态学去噪
-- **Detector**: 轮廓查找 → 面积/尺寸过滤 → 输出标记位置信息
-- **Inspector**: HSV 颜色匹配 → 面积偏差 → 中心偏移 → 输出 Pass/Fail
 
 ## 配置
 
-见 `config/config.yaml`。主要参数：
+默认配置见 `config/config.yaml`。产线部署时复制为独立程序文件并按实际样品调参。
 
-| 参数 | 说明 |
+### 主要配置段
+
+| 段 | 说明 |
+|----|------|
+| `input` | 相机设备号列表、曝光、增益、回退图片 |
+| `preprocess` | 缩放、灰度方法、滤波核、二值化方法 |
+| `calibration` | 主控图像路径（分槽位）、标定参数 |
+| `trigger` | 触发源（internal/external）、延迟 |
+| `detector` | 轮廓检测参数（面积/边长范围） |
+| `inspect` | 颜色/面积/位置检查阈值 |
+| `tools[]` | 检测工具列表（hsv_roi / contour_roi） |
+| `io` | Modbus 连接、综合逻辑、输出映射 |
+| `output` | 结果保存策略、日志级别、JPEG 质量 |
+
+## Web API 概览
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/health` | GET | 健康检查（相机状态/版本） |
+| `/api/config` | GET/PUT | 读写完整配置 |
+| `/api/config/list` | GET | 列出所有程序文件 |
+| `/api/config/switch` | POST | 切换活动程序 |
+| `/api/wizard/step/{1-4}` | GET/PUT | 向导步骤读写 |
+| `/api/trigger` | POST | 触发检测 |
+| `/api/stats/reset` | POST | 重置履历统计 |
+| `/api/calibration/master` | POST | 注册主控图像 |
+| `/api/calibration/master/status` | GET | 主控注册状态（分槽位） |
+| `/api/calibration/master/image` | GET | 获取主控图像（Base64） |
+| `/api/tools/hsv-area` | POST | 计算 ROI HSV 匹配面积 |
+| `/api/tools/hsv-sample-roi` | POST | ROI 内 HSV 取样 |
+| `/api/tools/hsv-match-preview` | POST | HSV 命中像素预览图 |
+| `/api/tools/image` | GET | 按工具返回 ROI 裁剪图 |
+| `/api/cameras/live` | GET | 获取实时画面 |
+| `/api/cameras/reconnect` | POST | 重连相机 |
+| `/api/camera/switch` | POST | 切换预览相机 |
+| `/api/camera/select` | POST | 选择相机设备号 |
+| `/api/camera/options` | GET | 可切换设备号列表 |
+| `/api/frame/current` | GET | 最近一次 WebSocket 帧 |
+| `/api/device` | GET | 设备信息 |
+| `/ws/frame` | WebSocket | 实时帧推送（含检测叠加） |
+
+## 生产环境
+
+| 项目 | 规格 |
 |------|------|
-| `inspect.colors` | 定义每种颜色的 HSV 上下界 |
-| `inspect.size_tolerance` | 允许的面积偏差比例 |
-| `inspect.position_tolerance` | 允许的中心偏移像素数 |
-| `detector.min_area` / `max_area` | 标记面积过滤范围 |
-| `preprocess.resize_width` | 统一缩放到目标宽度 |
-| `output.save_result` / `save_dir` | 是否保存结果图及目录 |
+| OS | Ubuntu 24.04.4 LTS |
+| CPU | Intel J1900, 4 核 2.0 GHz |
+| 内存 | DDR3 2 GB |
+| 硬盘 | SATA 120 GB |
+| IO | Modbus TCP（联调中） |
 
-产线部署时复制为 `config.local.yaml` 并根据实际样品调参。
+> 2 GB 内存环境建议关闭 `--debug` 窗口。预览帧率目标 ≥ 15fps。
 
-## 相关文档
-
-- [UI 设计稿](plan/UI设计稿.md) — SET/RUN 界面、四步向导、STEP4 IO 与综合判定
-- [主干开发计划](plan/主干开发计划.md) — 冲突决议、M0–M5 里程碑、前后端模块与任务
-- [CLAUDE.md](CLAUDE.md) — 开发命令与架构说明
-
-## 环境
+## 环境要求
 
 | | 开发 | 部署 |
 |---|---|---|
 | OS | Windows | Ubuntu 24.04.4 LTS |
-| Python | >= 3.10 | >= 3.10 |
+| Python | ≥ 3.10 | ≥ 3.10 |
 | 依赖 | pip + venv | pip + venv |
+
+## 相关文档
+
+- [CLAUDE.md](CLAUDE.md) — 开发命令与架构说明
+- [UI 设计稿](plan/UI设计稿.md) — SET/RUN 界面、四步向导、STEP4 IO 与综合判定
+- [主干开发计划](plan/主干开发计划.md) — M0–M5 里程碑与任务追踪
