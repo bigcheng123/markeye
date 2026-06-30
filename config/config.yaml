@@ -20,16 +20,19 @@ preprocess:
   morph_kernel: 3
   morph_iters: 1
 calibration:
-  master_image: C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_trigger_dual_tools_overal0\cam0.jpg
-  sample_count: 54
+  master_image: //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案
+    · 课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master_cam0.jpg
+  sample_count: 58
   reference_center:
-  - 140
+  - 1250
   - 957
-  reference_area: 128.0
+  reference_area: 142.0
   learn_threshold: 73
   masters:
-    '0': C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_trigger_dual_tools_overal0\cam0.jpg
-    '1': C:\Users\TRG14082\AppData\Local\Temp\pytest-of-TRG14082\pytest-19\test_trigger_dual_tools_overal0\cam1.jpg
+    '0': //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案 ·
+      课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master_cam0.jpg
+    '1': //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案 ·
+      课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master_cam1.jpg
 trigger:
   source: external
   exposure_ms: null
@@ -141,8 +144,8 @@ tools:
   cam: 1
   roi:
     shape: rect
-    x: 200
-    y: 400
+    x: 280
+    y: 300
     w: 120
     h: 80
     cx: 0
@@ -157,12 +160,12 @@ tools:
     - 180
     - 255
     - 255
-    match_area_max: 8000
-    match_area_min: 4000
+    match_area_max: 5000
+    match_area_min: 2000
     h_sample:
-    - 107
-    - 117
-    - 188
+    - 63
+    - 100
+    - 243
   id: '02'
 io:
   enabled: false

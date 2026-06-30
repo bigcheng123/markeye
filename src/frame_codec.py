@@ -21,6 +21,15 @@ def encode_image_b64(img: np.ndarray, quality: int = 70) -> str:
     return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
+def decode_image_b64(b64: str) -> np.ndarray:
+    data = base64.b64decode(b64)
+    buf = np.frombuffer(data, dtype=np.uint8)
+    img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("无法解码图像数据")
+    return img
+
+
 def trigger_source_label(source: str) -> str:
     return {
         "internal": "内部触发",

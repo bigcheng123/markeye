@@ -115,6 +115,8 @@ export async function runUiDemo(app) {
   await step("向导 STEP2 — 注册主控", async () => {
     document.querySelector('[data-action="register-live"]')?.click();
     await delay(300);
+    document.querySelector('[data-action="save-master"]')?.click();
+    await delay(300);
     document.querySelector("#wizard-next")?.click();
     await delay(400);
   });

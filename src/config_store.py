@@ -7,27 +7,12 @@ from typing import Optional
 
 import yaml
 
-from .camera_config import NUM_CAMERA_SLOTS, normalize_config
+from .camera_config import normalize_config
 
 
 def _validate_wizard_step3(cfg: dict) -> None:
-    """已启用工具所用的 CAM# 槽位须已注册主控图像。"""
-    masters = (cfg.get("calibration") or {}).get("masters") or {}
-    missing: list[str] = []
-    for t in cfg.get("tools") or []:
-        if not isinstance(t, dict) or t.get("enabled", True) is False:
-            continue
-        try:
-            slot = max(0, min(NUM_CAMERA_SLOTS - 1, int(t.get("cam", 0))))
-        except (TypeError, ValueError):
-            slot = 0
-        key = str(slot)
-        path = masters.get(key) or masters.get(slot)
-        if not path:
-            tid = t.get("id") or t.get("name") or "?"
-            missing.append(f"工具 {tid} 使用 CAM#{slot} 但未注册主控图像")
-    if missing:
-        raise ValueError("; ".join(missing))
+    """STEP3 工具校验（主控图像现阶段仅存档展示，不参与工具计算）。"""
+    return
 
 
 class ConfigStore:

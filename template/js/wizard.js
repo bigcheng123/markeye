@@ -453,7 +453,7 @@ export class Wizard {
   }
 
   async _hydrateStep2() {
-    this.refreshStep2MasterThumbs();
+    await window.__markeyeApp?.loadMasterThumbnails?.();
   }
 
   async _hydrateStep1() {
@@ -548,9 +548,9 @@ export class Wizard {
   }
 
   _step2MasterThumbHtml(cam) {
-    const img = window.__markeyeApp?.getMasterFrame?.(cam);
-    if (img?.image_base64) {
-      return `<img src="data:image/jpeg;base64,${img.image_base64}" alt="CAM#${cam} 已注册图像" />`;
+    const url = window.__markeyeApp?.getMasterThumbSrc?.(cam);
+    if (url) {
+      return `<img src="${url}" alt="CAM#${cam} 已注册图像" />`;
     }
     return `<span class="wizard-master-thumb__placeholder">CAM#${cam} 已注册图像</span>`;
   }
@@ -592,8 +592,7 @@ export class Wizard {
             <div class="wizard-master-thumb" data-master-thumb="1">${this._step2MasterThumbHtml(1)}</div>
           </div>
         </div>
-        <input type="file" id="wizard-step2-file" accept="image/*" hidden />
-        <button type="button" class="btn btn-secondary wizard-master-file-btn" data-action="register-file">注册文件的图像</button>
+        <button type="button" class="btn btn-secondary wizard-master-file-btn" data-action="save-master">注册主控图像</button>
       </div>
       <div class="wizard-tab-panel" data-panel="ext"><p>扩展功能（Phase 2）</p></div>
     `;
@@ -732,14 +731,7 @@ export class Wizard {
       this.contentEl?.querySelector("#wizard-step2-preview-cam")?.addEventListener("change", async (e) => {
         this._previewCamSlot = parseInt(e.target.value, 10) || 0;
         window.__markeyeApp?.imageViewer?.setPreviewCamSlot?.(this._previewCamSlot);
-        await window.__markeyeApp?.showLivePreviewSlot?.(this._previewCamSlot);
-      });
-
-      this.contentEl?.querySelector("#wizard-step2-file")?.addEventListener("change", async (e) => {
-        const file = e.target.files?.[0];
-        e.target.value = "";
-        if (!file) return;
-        await window.__markeyeApp?.registerMasterFromFile?.(file, this._previewCamSlot);
+        await window.__markeyeApp?._refreshStep2PreviewFrame?.(this._previewCamSlot);
       });
     }
 

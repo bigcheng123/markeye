@@ -23,7 +23,7 @@ from .camera_config import available_camera_ids, camera_id_to_cam_slot, slot_dev
 from .camera_service import CameraService
 from .config_store import ConfigStore
 from .display_images import _hsv_hit_mask, build_tool_binary_image, has_active_tools
-from .frame_codec import build_idle_frame, build_result_frame, encode_image_b64, maybe_save_result
+from .frame_codec import build_idle_frame, build_result_frame, decode_image_b64, encode_image_b64, maybe_save_result
 from .io.modbus_client import ModbusIOService
 from .pipeline import DetectionPipeline
 from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, run_roi_tools, sample_hsv_in_roi
@@ -44,7 +44,7 @@ class AppState:
         cfg = self.config_store.load()
         stats_path = cfg.get("output", {}).get("stats_file", "output/stats.json")
         self.stats = StatsStore(str(ROOT / stats_path))
-        self.calibration = CalibrationService(self.config_store, str(ROOT / "output/masters"))
+        self.calibration = CalibrationService(self.config_store, str(ROOT))
         self.camera = CameraService(cfg)
         self.io = ModbusIOService(cfg)
         self.pipeline = DetectionPipeline(cfg)
@@ -78,6 +78,7 @@ class AppState:
 
     def reload_services(self) -> None:
         cfg = self.config_store.get_cached()
+        self.calibration.sync_master_dir()
         old_devices = slot_device_ids(self.camera.config)
         new_devices = slot_device_ids(cfg)
         self.camera.config = cfg
@@ -465,12 +466,32 @@ async def calibration_add():
 async def calibration_master(body: Optional[dict] = None):
     body = body or {}
     slot = _master_slot(body)
-    frame = state.camera.capture_for_trigger(slot=slot)
-    if frame is None:
-        raise HTTPException(400, f"无法从 CAM#{slot} 获取图像以注册主控")
-    cal = state.calibration.register_master(frame, slot=slot)
+    ui_only = _as_bool(body.get("ui_only", True))
+    b64 = body.get("image_base64")
+    if b64:
+        try:
+            frame = await asyncio.to_thread(decode_image_b64, str(b64))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    else:
+        frame = state.camera.capture_for_trigger(slot=slot)
+        if frame is None:
+            raise HTTPException(400, f"无法从 CAM#{slot} 获取图像以注册主控")
+    cal = await asyncio.to_thread(
+        state.calibration.register_master, frame, slot, None, ui_only=ui_only
+    )
     state.reload_services()
-    return {"ok": True, "calibration": cal, "cam": slot}
+    return {"ok": True, "calibration": cal, "cam": slot, "ui_only": ui_only}
+
+
+@app.get("/api/calibration/master/status")
+async def get_master_status():
+    slots = state.calibration.list_master_slots()
+    return {
+        "profile": state.config_store._active,
+        "masters_dir": str(state.calibration.master_dir).replace("\\", "/"),
+        "slots": {str(k): v for k, v in slots.items()},
+    }
 
 
 @app.get("/api/calibration/master/image")

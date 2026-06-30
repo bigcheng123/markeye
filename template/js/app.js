@@ -22,7 +22,6 @@ import {
   registerMaster,
   createIdleFrame,
   createMasterFramePayload,
-  captureMockMasterFromLive,
 } from "./mock-data.js";
 import { runUiDemo } from "./ui-demo.js";
 
@@ -33,6 +32,11 @@ class MarkEyeApp {
     this.hasMasterRegistered = false;
     this.masterFrame = null;
     this._masterFrames = {};
+    this._masterSlots = { 0: false, 1: false };
+    this._masterDraft = { 0: false, 1: false };
+    this._masterThumbRev = 0;
+    this._step2PreviewActive = false;
+    this._step2PreviewTimer = null;
     this.livePreviewStarted = false;
     this._ignoreIdleUntil = 0;
     this._continuousTrigger = false;
@@ -317,18 +321,71 @@ class MarkEyeApp {
   }
 
   _stopWizardPreview() {
+    this._stopStep2Preview();
     this.previewMode = "off";
     this.livePreviewStarted = false;
     this.api?.stopLivePreview?.();
     this.imageViewer.disableRoiEditor?.();
   }
 
+  _stopStep2Preview() {
+    this._step2PreviewActive = false;
+    if (this._step2PreviewTimer) {
+      clearInterval(this._step2PreviewTimer);
+      this._step2PreviewTimer = null;
+    }
+  }
+
+  async _fetchCameraFrame(cam) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
+    if (isMockMode()) {
+      const { createLivePreviewFrame } = await import("./mock-data.js");
+      const frame = createLivePreviewFrame();
+      return {
+        image_base64: frame.frame.image_base64,
+        width: frame.frame.width,
+        height: frame.frame.height,
+      };
+    }
+    return this.api.get(`/api/cameras/live?cam=${slot}`);
+  }
+
+  async _refreshStep2PreviewFrame(cam) {
+    if (!this._step2PreviewActive || this.wizard?.step !== 2) return;
+    try {
+      const data = await this._fetchCameraFrame(cam);
+      if (data?.image_base64) {
+        this.imageViewer?.setPreviewCamSlot?.(cam);
+        this.imageViewer.updateFrame(this._buildMasterPayload(data, cam));
+        this.statusBar.setWizardLive();
+      }
+    } catch {
+      /* 单帧抓取失败时保持上一帧 */
+    }
+  }
+
+  async startStep2Preview() {
+    this._stopStep2Preview();
+    this.api?.stopLivePreview?.();
+    this.livePreviewStarted = false;
+    this._step2PreviewActive = true;
+    this.previewMode = "step2";
+    const slot = this.wizard?._previewCamSlot ?? 0;
+    await this._refreshStep2PreviewFrame(slot);
+    this._step2PreviewTimer = setInterval(() => {
+      const cam = this.wizard?._previewCamSlot ?? 0;
+      this._refreshStep2PreviewFrame(cam);
+    }, 400);
+  }
+
   _enterWizard() {
     this.hasMasterRegistered = false;
     this.masterFrame = null;
     this._masterFrames = {};
+    this._masterSlots = { 0: false, 1: false };
     this.wizard.reloadForProfile(1);
     this._setView("wizard");
+    this.loadMasterThumbnails();
     showToast("进入传感器设定向导", "ok");
   }
 
@@ -339,7 +396,8 @@ class MarkEyeApp {
   }
 
   async _onWizardStepChange(step) {
-    if (step <= 2) {
+    if (step === 1) {
+      this._stopStep2Preview();
       if (this.livePreviewStarted) {
         this.previewMode = "live";
         this.statusBar.setWizardLive();
@@ -352,7 +410,17 @@ class MarkEyeApp {
       return;
     }
 
+    if (step === 2) {
+      this.api?.stopLivePreview?.();
+      this.livePreviewStarted = false;
+      this.imageViewer.disableRoiEditor?.();
+      await this.loadMasterThumbnails();
+      await this.startStep2Preview();
+      return;
+    }
+
     if (step >= 3) {
+      this._stopStep2Preview();
       // STEP3 起使用 CAM# 对应 Live 画面做 ROI 设定，不再依赖 STEP2 注册的主控图像。
       // 仍停止连续 Live Preview（如果有），但保持 wizard 内可更新预览。
       this.api?.stopLivePreview?.();
@@ -372,7 +440,7 @@ class MarkEyeApp {
     this.imageViewer?.setPreviewCamSlot?.(slot);
     try {
       const img = await this.api.get(`/api/calibration/master/image?cam=${slot}`);
-      this.cacheMasterFrame(img, slot);
+      this._markMasterSlot(slot, img);
       this.imageViewer.updateFrame(this._buildMasterPayload(img, slot));
       this.statusBar.setWaiting();
     } catch {
@@ -404,12 +472,119 @@ class MarkEyeApp {
     return this._masterFrames?.[slot] ?? null;
   }
 
-  cacheMasterFrame(img, slot = 0) {
-    if (!this._masterFrames) this._masterFrames = {};
-    this._masterFrames[slot] = img;
-    this.masterFrame = img;
-    this.hasMasterRegistered = Object.values(this._masterFrames).some((f) => f?.image_base64);
+  hasMasterOnDisk(cam = 0) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
+    return Boolean(this._masterSlots?.[slot]);
+  }
+
+  getMasterThumbSrc(cam = 0) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
+    if (!this._masterSlots?.[slot]) return null;
+    const img = this.getMasterFrame(slot);
+    if (img?.image_base64) {
+      return `data:image/jpeg;base64,${img.image_base64}`;
+    }
+    if (!isMockMode()) {
+      const base = this.api?._base || "";
+      return `${base}/api/calibration/master/image?cam=${slot}&_=${this._masterThumbRev || 0}`;
+    }
+    return null;
+  }
+
+  async loadMasterThumbnails() {
+    this._masterSlots = { 0: false, 1: false };
+    this._masterDraft = { 0: false, 1: false };
+    this._masterFrames = {};
+    if (isMockMode()) {
+      const { loadAllMockMastersFromStorage } = await import("./mock-data.js");
+      loadAllMockMastersFromStorage(this._getActiveProfileName());
+      for (const cam of [0, 1]) {
+        const img = this.getMasterFrame(cam);
+        if (img?.image_base64) {
+          this._masterSlots[cam] = true;
+          this._masterDraft[cam] = false;
+        }
+      }
+    } else {
+      try {
+        const status = await this.api.get("/api/calibration/master/status");
+        if (status?.slots) {
+          for (const cam of [0, 1]) {
+            if (status.slots[String(cam)] || status.slots[cam]) {
+              this._masterSlots[cam] = true;
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      for (const cam of [0, 1]) {
+        if (!this._masterSlots[cam]) continue;
+        try {
+          const img = await this.api.get(`/api/calibration/master/image?cam=${cam}`);
+          if (img?.image_base64) {
+            this._masterFrames[cam] = img;
+            this._masterDraft[cam] = false;
+          }
+        } catch {
+          this._masterSlots[cam] = false;
+        }
+      }
+    }
+    this._masterThumbRev = Date.now();
+    this.hasMasterRegistered = [0, 1].some((c) => this._masterSlots[c]);
     this.wizard?.refreshStep2MasterThumbs?.();
+  }
+
+  _markMasterSlot(cam, img = null, { draft = false } = {}) {
+    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
+    this._masterSlots[slot] = true;
+    if (img) this._masterFrames[slot] = img;
+    if (draft) this._masterDraft[slot] = true;
+    this._masterThumbRev = Date.now();
+    this.hasMasterRegistered = [0, 1].some((c) => this._masterSlots[c]);
+    this.wizard?.refreshStep2MasterThumbs?.();
+  }
+
+  /** STEP2：从预览通道抓取一帧，填入指定 CAM# 槽位（仅更新界面，不落盘） */
+  async captureStep2MasterSlot(targetSlot = 0) {
+    const slot = Math.max(0, Math.min(1, parseInt(targetSlot, 10) || 0));
+    const previewCam = this.wizard?._previewCamSlot ?? 0;
+    try {
+      const img = await this._fetchCameraFrame(previewCam);
+      if (!img?.image_base64) throw new Error("no frame");
+      this._markMasterSlot(slot, img, { draft: true });
+      showToast(`已抓取 CAM#${previewCam} 图像至 CAM#${slot}`, "ok");
+    } catch {
+      showToast(`抓取 CAM#${previewCam} 图像失败`, "err");
+    }
+  }
+
+  /** STEP2：将当前槽位主控图像写入磁盘 */
+  async saveStep2Masters() {
+    const slots = [0, 1].filter((s) => this._masterFrames[s]?.image_base64);
+    if (!slots.length) {
+      showToast("请先点击上方按钮抓取主控图像", "warn");
+      return;
+    }
+    try {
+      for (const slot of slots) {
+        const img = this._masterFrames[slot];
+        await this.api.post("/api/calibration/master", {
+          cam: slot,
+          image_base64: img.image_base64,
+          width: img.width,
+          height: img.height,
+          ui_only: true,
+        });
+        this._masterDraft[slot] = false;
+      }
+      this._masterThumbRev = Date.now();
+      this.hasMasterRegistered = true;
+      showToast("主控图像已保存", "ok");
+    } catch {
+      showToast("保存主控图像失败", "err");
+    }
   }
 
   _buildMasterPayload(img, camSlot = 0) {
@@ -457,76 +632,7 @@ class MarkEyeApp {
   }
 
   async registerLiveMaster(cam = 0) {
-    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
-    if (!this.livePreviewStarted && !isMockMode()) {
-      showToast("请先点击 拍摄 启动 Live 预览", "err");
-      return;
-    }
-    try {
-      let img;
-      if (isMockMode()) {
-        img = captureMockMasterFromLive(slot);
-        registerMaster();
-      } else {
-        const data = await this.api.get(`/api/cameras/live?cam=${slot}`);
-        if (!data?.image_base64) throw new Error("no live frame");
-        img = {
-          image_base64: data.image_base64,
-          width: data.width,
-          height: data.height,
-        };
-      }
-      this.cacheMasterFrame(img, slot);
-      showToast(`已注册 CAM#${slot} Live 图像为主控`, "ok");
-    } catch {
-      showToast(`注册 CAM#${slot} 主控图像失败`, "err");
-    }
-  }
-
-  async registerMasterFromFile(file, cam = 0) {
-    const slot = Math.max(0, Math.min(1, parseInt(cam, 10) || 0));
-    if (!file?.type?.startsWith("image/")) {
-      showToast("请选择图像文件", "err");
-      return;
-    }
-    try {
-      const img = await this._readImageFileAsMaster(file);
-      if (isMockMode()) {
-        const { setMockMasterImage } = await import("./mock-data.js");
-        setMockMasterImage(img, slot);
-        registerMaster();
-      }
-      this.cacheMasterFrame(img, slot);
-      showToast(`已从文件注册 CAM#${slot} 主控图像`, "ok");
-    } catch {
-      showToast(`注册 CAM#${slot} 主控图像失败`, "err");
-    }
-  }
-
-  _readImageFileAsMaster(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result;
-        if (typeof dataUrl !== "string") {
-          reject(new Error("read failed"));
-          return;
-        }
-        const image = new Image();
-        image.onload = () => {
-          const b64 = dataUrl.split(",")[1] || "";
-          resolve({
-            image_base64: b64,
-            width: image.naturalWidth,
-            height: image.naturalHeight,
-          });
-        };
-        image.onerror = () => reject(new Error("decode failed"));
-        image.src = dataUrl;
-      };
-      reader.onerror = () => reject(reader.error || new Error("read failed"));
-      reader.readAsDataURL(file);
-    });
+    return this.captureStep2MasterSlot(cam);
   }
 
   async _completeWizard() {
@@ -558,7 +664,10 @@ class MarkEyeApp {
       this.hasMasterRegistered = false;
       this.masterFrame = null;
       this._masterFrames = {};
+      this._masterSlots = { 0: false, 1: false };
+      this._masterDraft = { 0: false, 1: false };
       this.wizard.reloadForProfile(step);
+      await this.loadMasterThumbnails();
       await this._onWizardStepChange(step);
     } else if (this.view === "run" && isMockMode()) {
       this._onFrame(createIdleFrame());
@@ -706,11 +815,9 @@ class MarkEyeApp {
         },
         "register-live": (e) => {
           const cam = parseInt(e.target.closest("[data-action]")?.dataset?.cam, 10);
-          return this.registerLiveMaster(Number.isFinite(cam) ? cam : 0);
+          return this.captureStep2MasterSlot(Number.isFinite(cam) ? cam : 0);
         },
-        "register-file": () => {
-          document.querySelector("#wizard-step2-file")?.click();
-        },
+        "save-master": () => this.saveStep2Masters(),
         logic: () => showToast(`打开逻辑 ${e.target.dataset.n} 编辑器（Mock）`, "ok"),
       };
 

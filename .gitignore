@@ -21,6 +21,8 @@ Thumbs.db
 data/*.jpg
 data/*.png
 data/*.bmp
+data/masters/**/*.jpg
+data/masters/**/*.png
 *.log
 output/
 

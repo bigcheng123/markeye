@@ -96,6 +96,49 @@ export function registerMaster() {
   _hasMaster = true;
 }
 
+const MASTER_STORAGE_PREFIX = "markeye:masters:";
+
+function _masterStorageKey(profile, slot) {
+  return `${MASTER_STORAGE_PREFIX}${profile}:cam${slot}`;
+}
+
+export function clearMockMasterSlots() {
+  for (const key of Object.keys(_masterFrames)) {
+    delete _masterFrames[key];
+  }
+  _hasMaster = false;
+}
+
+export function saveMockMasterToStorage(profile, slot, img) {
+  const s = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
+  if (!img?.image_base64) return;
+  setMockMasterImage(img, s);
+  try {
+    localStorage.setItem(_masterStorageKey(profile, s), JSON.stringify(img));
+  } catch {
+    /* localStorage 不可用时仅保留内存 */
+  }
+}
+
+export function loadMockMasterFromStorage(profile, slot = 0) {
+  const s = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
+  try {
+    const raw = localStorage.getItem(_masterStorageKey(profile, s));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function loadAllMockMastersFromStorage(profile) {
+  clearMockMasterSlots();
+  for (const slot of [0, 1]) {
+    const img = loadMockMasterFromStorage(profile, slot);
+    if (img?.image_base64) setMockMasterImage(img, slot);
+  }
+}
+
 export function hasMockMaster(slot = 0) {
   const s = Math.max(0, Math.min(1, parseInt(slot, 10) || 0));
   return Boolean(_masterFrames[s]?.image_base64);

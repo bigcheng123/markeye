@@ -16,8 +16,8 @@ def client(tmp_path, monkeypatch):
         "input:\n  camera_id: 0\ntrigger:\n  source: external\noutput:\n  jpeg_quality: 70\n",
         encoding="utf-8",
     )
-    master_dir = tmp_path / "masters"
-    master_dir.mkdir()
+    master_dir = tmp_path / "data" / "masters" / "config"
+    master_dir.mkdir(parents=True)
 
     monkeypatch.setattr(web_server, "ROOT", tmp_path)
     web_server.state = web_server.AppState()

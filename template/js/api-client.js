@@ -100,12 +100,33 @@ class MockApiClient {
     }
     if (path === "/api/calibration/master") {
       const slot = parseInt(body?.cam, 10) || 0;
-      captureMockMasterFromLive(slot);
-      return { ok: true, calibration: { sample_count: getMockState().sampleCount } };
+      const {
+        captureMockMasterFromLive,
+        saveMockMasterToStorage,
+        setMockMasterImage,
+        registerMaster,
+      } = await import("./mock-data.js");
+      let img;
+      if (body?.image_base64) {
+        img = {
+          image_base64: body.image_base64,
+          width: body.width || 800,
+          height: body.height || 500,
+        };
+        setMockMasterImage(img, slot);
+        registerMaster();
+      } else {
+        img = captureMockMasterFromLive(slot);
+      }
+      saveMockMasterToStorage(this._activeProfile, slot, img);
+      return { ok: true, calibration: { sample_count: getMockState().sampleCount }, cam: slot };
     }
     if (path === "/api/config/switch") {
       const name = body?.name;
       if (name) this._activeProfile = name;
+      const { loadAllMockMastersFromStorage } = await import("./mock-data.js");
+      loadAllMockMastersFromStorage(name);
+      await window.__markeyeApp?.loadMasterThumbnails?.();
       return { ok: true, active: this._activeProfile };
     }
     if (path === "/api/tools/hsv-area") {
@@ -218,6 +239,14 @@ class MockApiClient {
         camera_id: this._mockCameraId,
         connected: this._connected,
         mock: true,
+      };
+    }
+    if (path.startsWith("/api/calibration/master/status")) {
+      const { hasMockMaster } = await import("./mock-data.js");
+      return {
+        profile: this._activeProfile,
+        masters_dir: `mock/localStorage/${this._activeProfile}`,
+        slots: { 0: hasMockMaster(0), 1: hasMockMaster(1) },
       };
     }
     if (path.startsWith("/api/calibration/master/image")) {
