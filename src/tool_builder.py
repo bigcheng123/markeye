@@ -33,9 +33,9 @@ def build_inspections(pipeline_result: PipelineResult, config: dict) -> list[dic
             {
                 "tool": key,
                 "name": r.get("name", t.get("name", key)),
-                "passed": r.get("passed"),
-                "value": r.get("value", 0),
-                "threshold": r.get("threshold", 100),
+                "passed": None if r.get("passed") is None else bool(r.get("passed")),
+                "value": int(r.get("value", 0)),
+                "threshold": int(r.get("threshold", 100)),
                 "fail_reasons": r.get("fail_reasons", []) or [],
                 "details": r.get("details", {}) or {},
             }
@@ -56,9 +56,9 @@ def marks_to_json(marks, inspections=None, overall_passed=None) -> list[dict]:
             mark_passed = None
         out.append({
             "label": m.label,
-            "bbox": list(m.bbox),
-            "center": list(m.center),
-            "area": m.area,
+            "bbox": [int(v) for v in m.bbox],
+            "center": [float(v) for v in m.center],
+            "area": float(m.area),
             "passed": mark_passed,
             "contour": contour,
         })

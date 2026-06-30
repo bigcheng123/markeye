@@ -3,7 +3,7 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -22,6 +22,19 @@ def setup_logger(name: str = "markeye", level: str = "INFO") -> logging.Logger:
         logger.addHandler(handler)
 
     return logger
+
+
+def json_safe(value: Any) -> Any:
+    """将 numpy 标量/数组转为 JSON 可序列化的原生 Python 类型。"""
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def imread(path: str, flags: int = cv2.IMREAD_COLOR) -> Optional[np.ndarray]:

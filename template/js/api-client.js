@@ -3,6 +3,9 @@
 import {
   createMockFrame,
   createIdleFrame,
+  createLivePreviewFrame,
+  captureMockMasterFromLive,
+  getMockMasterImage,
   triggerMockFrame,
   getMockState,
 } from "./mock-data.js";
@@ -29,6 +32,20 @@ class MockApiClient {
     this.onFrame = handlers.onFrame;
     this.onConnectionChange = handlers.onConnectionChange || (() => {});
     this._connected = false;
+    this._liveTimer = null;
+    this._activeProfile = "config.yaml";
+    this._profiles = [
+      { id: "config", name: "config.yaml", active: true },
+      { id: "config.local", name: "config.local.yaml", active: false },
+    ];
+    this._wizardData = {};
+  }
+
+  _profileList() {
+    return this._profiles.map((p) => ({
+      ...p,
+      active: p.name === this._activeProfile,
+    }));
   }
 
   start() {
@@ -37,11 +54,28 @@ class MockApiClient {
   }
 
   stop() {
+    this.stopLivePreview();
     this._setConnected(false);
   }
 
   reconnect() {
     this.start();
+  }
+
+  startLivePreview() {
+    this.stopLivePreview();
+    if (!this._connected) this._setConnected(true);
+    this.onFrame(createLivePreviewFrame());
+    this._liveTimer = setInterval(() => {
+      this.onFrame(createLivePreviewFrame());
+    }, 100);
+  }
+
+  stopLivePreview() {
+    if (this._liveTimer) {
+      clearInterval(this._liveTimer);
+      this._liveTimer = null;
+    }
   }
 
   _setConnected(connected) {
@@ -62,13 +96,60 @@ class MockApiClient {
       resetMockStats();
       this.onFrame(createIdleFrame());
     }
+    if (path === "/api/calibration/master") {
+      const img = captureMockMasterFromLive();
+      return { ok: true, calibration: { sample_count: getMockState().sampleCount } };
+    }
+    if (path === "/api/config/switch") {
+      const name = body?.name;
+      if (name) this._activeProfile = name;
+      return { ok: true, active: this._activeProfile };
+    }
+    if (path === "/api/tools/hsv-area") {
+      const viewer = window.__markeyeApp?.imageViewer;
+      if (!viewer?._hasFrame) throw new Error("no frame");
+      return viewer.computeHsvAreaInRoi({
+        roi: body?.roi,
+        hLower: body?.h_lower || body?.params?.h_lower,
+        hUpper: body?.h_upper || body?.params?.h_upper,
+      });
+    }
+    if (path === "/api/tools/hsv-sample-roi") {
+      const viewer = window.__markeyeApp?.imageViewer;
+      if (!viewer?._hasFrame) throw new Error("no frame");
+      const hsv = viewer.sampleHsvFromRoi({ roi: body?.roi });
+      if (!hsv) throw new Error("empty roi");
+      return { hsv };
+    }
     return { ok: true, mock: true, path, body, state: getMockState() };
+  }
+
+  async put(path, body = {}) {
+    await this._delay(80);
+    const m = path.match(/^\/api\/wizard\/step\/(\d+)$/);
+    if (m) {
+      const step = m[1];
+      const key = `${this._activeProfile}:step${step}`;
+      this._wizardData[key] = { ...(this._wizardData[key] || {}), ...body };
+      return { ok: true, mock: true };
+    }
+    return { ok: true, mock: true, path, body };
   }
 
   async get(path) {
     await this._delay(50);
     if (path === "/api/config/list") {
-      return { profiles: [{ id: "config", name: "config.yaml", active: true }] };
+      return { profiles: this._profileList() };
+    }
+    const wm = path.match(/^\/api\/wizard\/step\/(\d+)$/);
+    if (wm) {
+      const key = `${this._activeProfile}:step${wm[1]}`;
+      return this._wizardData[key] || {};
+    }
+    if (path === "/api/calibration/master/image") {
+      const img = getMockMasterImage();
+      if (!img) throw new Error("404");
+      return img;
     }
     return { ok: true, mock: true, path, state: getMockState() };
   }
@@ -96,12 +177,18 @@ class RealApiClient {
   }
 
   start() {
+    if (this._ws && this._ws.readyState !== WebSocket.CLOSED) return;
+    this._ws = null;
     this._connectWs();
   }
 
   stop() {
-    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this._ws) {
+      this._ws.onclose = null;
       this._ws.close();
       this._ws = null;
     }
@@ -113,12 +200,26 @@ class RealApiClient {
     this.start();
   }
 
+  async pullCurrentFrame() {
+    try {
+      const data = await this.get("/api/frame/current");
+      if (data?.type === "frame") this.onFrame(data);
+    } catch {
+      /* 后端未就绪时忽略 */
+    }
+  }
+
   _connectWs() {
     try {
       this._ws = new WebSocket(wsUrl());
-      this._ws.onopen = () => this._setConnected(true);
+      this._ws.onopen = () => {
+        this._setConnected(true);
+        this.pullCurrentFrame();
+      };
       this._ws.onclose = () => {
+        this._ws = null;
         this._setConnected(false);
+        if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
         this._reconnectTimer = setTimeout(() => this._connectWs(), 2000);
       };
       this._ws.onerror = () => this._setConnected(false);
@@ -126,8 +227,8 @@ class RealApiClient {
         try {
           const data = JSON.parse(ev.data);
           if (data.type === "frame") this.onFrame(data);
-        } catch {
-          /* ignore */
+        } catch (err) {
+          console.warn("WebSocket frame parse error", err);
         }
       };
     } catch {
@@ -199,6 +300,10 @@ export class ApiClient {
     return this._impl.reconnect();
   }
 
+  pullCurrentFrame() {
+    return this._impl.pullCurrentFrame?.();
+  }
+
   post(path, body) {
     return this._impl.post(path, body);
   }
@@ -213,6 +318,14 @@ export class ApiClient {
 
   trigger() {
     return this._impl.trigger();
+  }
+
+  startLivePreview() {
+    return this._impl.startLivePreview?.();
+  }
+
+  stopLivePreview() {
+    return this._impl.stopLivePreview?.();
   }
 }
 

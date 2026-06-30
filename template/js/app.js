@@ -16,12 +16,24 @@ import {
   setAppView,
   updateModeTabIcons,
 } from "./layout.js";
-import { addMockCalibration, resetMockStats, registerMaster, createIdleFrame } from "./mock-data.js";
+import {
+  addMockCalibration,
+  resetMockStats,
+  registerMaster,
+  createIdleFrame,
+  createMasterFramePayload,
+  captureMockMasterFromLive,
+} from "./mock-data.js";
 import { runUiDemo } from "./ui-demo.js";
 
 class MarkEyeApp {
   constructor() {
     this.view = "run";
+    this.previewMode = "off";
+    this.hasMasterRegistered = false;
+    this.masterFrame = null;
+    this.livePreviewStarted = false;
+    this._ignoreIdleUntil = 0;
     this.api = null;
 
     this.statusBar = new StatusBar();
@@ -31,6 +43,8 @@ class MarkEyeApp {
     this.wizard = new Wizard({
       onExit: () => this._exitWizard(),
       onComplete: () => this._completeWizard(),
+      onStepChange: (step) => this._onWizardStepChange(step),
+      hasMaster: () => this.hasMasterRegistered,
     });
 
     this._bindModeTabs();
@@ -49,13 +63,17 @@ class MarkEyeApp {
         if (!connected && this.view === "run") {
           this.statusBar.setIdle();
           this.imageViewer.setWaiting(true);
+        } else if (connected && this.view === "run" && !isMockMode()) {
+          this.api?.pullCurrentFrame?.();
         }
       },
     });
-    this.api.start();
     this._loadProfiles();
     this._setView("run");
-    requestAnimationFrame(() => this.imageViewer.fitToScreen());
+    requestAnimationFrame(() => {
+      this.imageViewer.fitToScreen();
+      requestAnimationFrame(() => this.imageViewer.fitToScreen());
+    });
 
     const params = new URLSearchParams(location.search);
     if (params.get("autodemo") === "1") {
@@ -64,7 +82,29 @@ class MarkEyeApp {
   }
 
   _onFrame(data) {
+    const isTriggerResult = !data.idle && data.overall?.passed != null;
+    if (isTriggerResult) {
+      this.imageViewer.updateVerdict(data);
+    }
+
+    if (this.view === "wizard") {
+      if (this.previewMode === "master") {
+        if (!data.idle) {
+          if (data.overall?.passed === false) playNgAlert();
+          this.statusBar.update(data);
+          this.imageViewer.updateFrame(data);
+        }
+        return;
+      }
+      if (this.previewMode !== "live") return;
+      this.statusBar.update(data);
+      this.imageViewer.updateFrame(data);
+      return;
+    }
     if (this.view !== "run") return;
+
+    if (data.idle && performance.now() < this._ignoreIdleUntil) return;
+
     if (data.overall?.passed === false && !data.idle) {
       playNgAlert();
     }
@@ -99,44 +139,191 @@ class MarkEyeApp {
 
     if (view === "run") {
       this.wizard.hide();
+      this._stopWizardPreview();
       this.statusBar.setWaiting();
-      this.api?.reconnect?.() || this.api?.start();
+      if (!this.api?._connected) {
+        this.api?.start();
+      }
+      if (!isMockMode()) {
+        this.api?.pullCurrentFrame?.();
+      }
       if (isMockMode()) {
         this._onFrame(createIdleFrame());
       }
     } else if (view === "set") {
       this.wizard.hide();
+      this._stopWizardPreview();
       this.api?.stop();
       this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
     } else if (view === "wizard") {
       this.wizard.show();
-      this.statusBar.setWizardLive();
+      this.previewMode = "off";
+      this.livePreviewStarted = false;
+      this.imageViewer.disableRoiEditor?.();
+      this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
     }
   }
 
+  _stopWizardPreview() {
+    this.previewMode = "off";
+    this.livePreviewStarted = false;
+    this.api?.stopLivePreview?.();
+    this.imageViewer.disableRoiEditor?.();
+  }
+
   _enterWizard() {
-    this.wizard.goToStep(1);
+    this.hasMasterRegistered = false;
+    this.masterFrame = null;
+    this.wizard.reloadForProfile(1);
     this._setView("wizard");
     showToast("进入传感器设定向导", "ok");
   }
 
   _exitWizard() {
+    this._stopWizardPreview();
     this._setView("set");
     showToast("已退出向导", "warn");
   }
 
-  async _completeWizard() {
-    if (!isMockMode()) {
-      await this.api.post("/api/calibration/master");
-      await this.api.put("/api/wizard/step/4", {});
+  async _onWizardStepChange(step) {
+    if (step <= 2) {
+      if (this.livePreviewStarted) {
+        this.previewMode = "live";
+        this.statusBar.setWizardLive();
+      } else {
+        this.previewMode = "off";
+        this.statusBar.setWaiting();
+        this.imageViewer.updateFrame(createIdleFrame());
+      }
+      this.imageViewer.disableRoiEditor?.();
+      return;
+    }
+
+    if (step >= 3) {
+      this.api?.stopLivePreview?.();
+      this.previewMode = "master";
+      await this._showMasterPreview();
+      this.wizard.enableStep3Roi?.();
+    }
+  }
+
+  async _showMasterPreview() {
+    if (this.masterFrame) {
+      this.imageViewer.updateFrame(this._buildMasterPayload(this.masterFrame));
+      this.statusBar.setWaiting();
+      return;
+    }
+    try {
+      const img = await this.api.get("/api/calibration/master/image");
+      this.cacheMasterFrame(img);
+      this.imageViewer.updateFrame(this._buildMasterPayload(img));
+      this.statusBar.setWaiting();
+    } catch {
+      showToast("无法加载主控图像", "err");
+      this.imageViewer.updateFrame(createIdleFrame());
+    }
+  }
+
+  cacheMasterFrame(img) {
+    this.masterFrame = img;
+    this.hasMasterRegistered = true;
+  }
+
+  _buildMasterPayload(img) {
+    if (isMockMode()) {
+      return createMasterFramePayload(img);
+    }
+    return {
+      type: "frame",
+      timestamp: new Date().toISOString(),
+      idle: true,
+      overall: { passed: null },
+      frame: {
+        width: img.width,
+        height: img.height,
+        process_ms: null,
+        image_base64: img.image_base64,
+      },
+      marks: [],
+      inspections: [],
+      stats: {},
+      calibration: {},
+      trigger: { source: "external", label: "外部触发" },
+    };
+  }
+
+  async startLivePreview() {
+    if (isMockMode()) {
+      this.api.reconnect();
+      this.api.startLivePreview();
     } else {
+      this.api.reconnect();
+    }
+    this.livePreviewStarted = true;
+    this.previewMode = "live";
+    this.statusBar.setWizardLive();
+    this.imageViewer.setWaiting(false, { livePreview: true });
+    showToast("Live 预览已启动", "ok");
+  }
+
+  async registerLiveMaster() {
+    if (!this.livePreviewStarted && !isMockMode()) {
+      showToast("请先点击 AI拍摄 启动 Live 预览", "err");
+      return;
+    }
+    try {
+      if (isMockMode()) {
+        const img = captureMockMasterFromLive();
+        registerMaster();
+        this.cacheMasterFrame(img);
+      } else {
+        await this.api.post("/api/calibration/master");
+        const img = await this.api.get("/api/calibration/master/image");
+        this.cacheMasterFrame(img);
+      }
+      this.api?.stopLivePreview?.();
+      this.previewMode = "master";
+      this.imageViewer.updateFrame(this._buildMasterPayload(this.masterFrame));
+      this.statusBar.setWaiting();
+      showToast("已注册 Live 图像为主控", "ok");
+    } catch {
+      showToast("注册主控图像失败", "err");
+    }
+  }
+
+  async _completeWizard() {
+    const sel = document.querySelector("#config-profile");
+    const profileLabel = sel?.selectedOptions[0]?.text || "当前程序";
+    if (isMockMode()) {
       registerMaster();
     }
-    await infoModal("完成", "传感器设定已完成，配置已保存。");
+    await infoModal("完成", `传感器设定已完成，配置已保存至「${profileLabel}」。`);
+    this._stopWizardPreview();
     this._setView("set");
     showToast("向导完成", "ok");
+  }
+
+  _getActiveProfileName() {
+    return document.querySelector("#config-profile")?.value || "config.yaml";
+  }
+
+  async _switchProfile(name) {
+    const prev = this._getActiveProfileName();
+    if (name === prev) return;
+
+    await this.api.post("/api/config/switch", { name });
+
+    if (this.view === "wizard") {
+      const step = this.wizard.step;
+      this.hasMasterRegistered = false;
+      this.masterFrame = null;
+      this.wizard.reloadForProfile(step);
+      await this._onWizardStepChange(step);
+    } else if (this.view === "run" && isMockMode()) {
+      this._onFrame(createIdleFrame());
+    }
   }
 
   _bindModeTabs() {
@@ -206,8 +393,16 @@ class MarkEyeApp {
       showToast("扩展设定（Phase 2 Mock）", "ok");
     });
 
-    document.querySelector("#config-profile")?.addEventListener("change", (e) => {
-      showToast(`已切换程序: ${e.target.selectedOptions[0]?.text}`, "ok");
+    document.querySelector("#config-profile")?.addEventListener("change", async (e) => {
+      const name = e.target.value;
+      const label = e.target.selectedOptions[0]?.text;
+      try {
+        await this._switchProfile(name);
+        showToast(`已切换程序: ${label}`, "ok");
+      } catch {
+        showToast("切换程序失败", "err");
+        await this._loadProfiles();
+      }
     });
   }
 
@@ -258,23 +453,22 @@ class MarkEyeApp {
       if (!action || this.view !== "wizard") return;
 
       const handlers = {
-        "ai-shoot": () => showToast("AI拍摄处理完成（Mock）", "ok"),
-        "register-history": () => {
-          registerMaster();
-          showToast("已从图像历史注册主控（Mock）", "ok");
+        "ai-shoot": () => this.startLivePreview(),
+        "register-live": () => this.registerLiveMaster(),
+        "register-file": async () => {
+          if (isMockMode()) {
+            registerMaster();
+            const { captureMockMasterFromLive: cap } = await import("./mock-data.js");
+            this.cacheMasterFrame(cap());
+            showToast("已从文件注册主控（Mock）", "ok");
+          } else {
+            showToast("文件注册（Phase 2）", "ok");
+          }
         },
-        "register-file": () => {
-          registerMaster();
-          showToast("已从文件注册主控（Mock）", "ok");
-        },
-        "tool-add": () => showToast("追加工具（Mock）", "ok"),
-        "tool-edit": () => showToast("编辑工具（Mock）", "ok"),
-        "tool-copy": () => showToast("复制工具（Mock）", "ok"),
-        "tool-delete": () => showToast("删除工具（Mock）", "warn"),
         logic: () => showToast(`打开逻辑 ${e.target.dataset.n} 编辑器（Mock）`, "ok"),
       };
 
-      if (handlers[action]) handlers[action]();
+      if (handlers[action]) await handlers[action]();
     });
   }
 
@@ -283,10 +477,13 @@ class MarkEyeApp {
       showToast("请先连接传感器", "err");
       return;
     }
+    this._ignoreIdleUntil = performance.now() + 700;
     const frame = await this.api.trigger();
     if (frame) {
-      this._onFrame(frame);
-      showToast(`触发完成 — ${frame.overall.passed ? "OK" : "NG"}`, frame.overall.passed ? "ok" : "err");
+      // post() 已调用 onFrame；此处仅补 toast（避免重复处理）
+      if (!frame.idle && frame.overall?.passed != null) {
+        showToast(`触发完成 — ${frame.overall.passed ? "OK" : "NG"}`, frame.overall.passed ? "ok" : "err");
+      }
     }
   }
 
@@ -303,7 +500,6 @@ class MarkEyeApp {
     });
   }
 
-  /** 供 ui-demo 调用 */
   clickMode(mode) {
     document.querySelector(`.mode-tab[data-mode="${mode}"]`)?.click();
   }
@@ -317,7 +513,20 @@ class MarkEyeApp {
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  window.__markeyeApp = new MarkEyeApp();
-  window.__markeyeApp.start();
-});
+function bootMarkEyeApp() {
+  if (window.__markeyeApp) return;
+  try {
+    window.__markeyeApp = new MarkEyeApp();
+    window.__markeyeApp.start();
+  } catch (err) {
+    console.error("MarkEye 启动失败:", err);
+    showConnectionBanner(true);
+    showToast(`界面启动失败: ${err?.message || err}`, "err");
+  }
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootMarkEyeApp);
+} else {
+  bootMarkEyeApp();
+}

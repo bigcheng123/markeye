@@ -1,0 +1,123 @@
+"""Web UI 三种显示模式：原图 / 处理叠加 / 二值化命中目标。"""
+
+from __future__ import annotations
+
+import cv2
+import numpy as np
+
+from .tools.roi_tools import crop_roi, run_roi_tools
+
+
+def tools_rois_to_json(config: dict) -> list[dict]:
+    """config.tools → 前端 ROI 叠加层数据。"""
+    items: list[dict] = []
+    for t in (config or {}).get("tools") or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("enabled", True) is False:
+            continue
+        roi = t.get("roi")
+        if not isinstance(roi, dict):
+            continue
+        items.append(
+            {
+                "id": t.get("id") or t.get("name") or "tool",
+                "name": t.get("name", ""),
+                "roi": roi,
+            }
+        )
+    return items
+
+
+def has_active_tools(config: dict) -> bool:
+    """是否配置了启用的检测工具（有则不再使用旧版全局轮廓 marks）。"""
+    for t in (config or {}).get("tools") or []:
+        if isinstance(t, dict) and t.get("enabled", True) is not False:
+            return True
+    return False
+
+
+def _apply_roi_mask(mask: np.ndarray, crop_mask: np.ndarray | None) -> np.ndarray:
+    if crop_mask is None:
+        return mask
+    out = np.zeros_like(mask)
+    out[crop_mask > 0] = mask[crop_mask > 0]
+    return out
+
+
+def _hsv_hit_mask(img: np.ndarray, tool: dict) -> np.ndarray:
+    h, w = img.shape[:2]
+    canvas = np.zeros((h, w), dtype=np.uint8)
+    roi = (tool or {}).get("roi", {}) or {}
+    params = (tool or {}).get("params", {}) or {}
+    lower = params.get("h_lower") or params.get("lower") or [0, 0, 0]
+    upper = params.get("h_upper") or params.get("upper") or [180, 255, 255]
+    lower = np.array([int(lower[0]), int(lower[1]), int(lower[2])], dtype=np.uint8)
+    upper = np.array([int(upper[0]), int(upper[1]), int(upper[2])], dtype=np.uint8)
+
+    crop = crop_roi(img, roi)
+    if crop.img.size == 0:
+        return canvas
+
+    hsv = cv2.cvtColor(crop.img, cv2.COLOR_BGR2HSV)
+    local = cv2.inRange(hsv, lower, upper)
+    local = _apply_roi_mask(local, crop.mask)
+    ox, oy = crop.offset_xy
+    canvas[oy : oy + local.shape[0], ox : ox + local.shape[1]] = cv2.bitwise_or(
+        canvas[oy : oy + local.shape[0], ox : ox + local.shape[1]], local
+    )
+    return canvas
+
+
+def _contour_hit_mask(img: np.ndarray, tool: dict, tool_result: dict | None) -> np.ndarray:
+    h, w = img.shape[:2]
+    canvas = np.zeros((h, w), dtype=np.uint8)
+    det = None
+    if tool_result and isinstance(tool_result.get("details"), dict):
+        det = tool_result["details"].get("detected")
+    if not det:
+        results = run_roi_tools(img, {"tools": [tool]})
+        if results:
+            det = (results[0].get("details") or {}).get("detected")
+    if not det or not det.get("bbox"):
+        return canvas
+    x, y, bw, bh = [int(v) for v in det["bbox"][:4]]
+    x = max(0, min(w - 1, x))
+    y = max(0, min(h - 1, y))
+    bw = max(1, min(w - x, bw))
+    bh = max(1, min(h - y, bh))
+    canvas[y : y + bh, x : x + bw] = 255
+    return canvas
+
+
+def build_tool_binary_image(
+    img: np.ndarray,
+    config: dict,
+    tool_results: list[dict] | None = None,
+) -> np.ndarray:
+    """黑底白前景：各工具 ROI 内命中的识别目标。"""
+    if img is None or img.size == 0:
+        return np.zeros((1, 1), dtype=np.uint8)
+
+    h, w = img.shape[:2]
+    canvas = np.zeros((h, w), dtype=np.uint8)
+    results_by_tool = {
+        r.get("tool"): r for r in (tool_results or []) if isinstance(r, dict)
+    }
+
+    for t in (config or {}).get("tools") or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("enabled", True) is False:
+            continue
+        key = t.get("id") or t.get("name") or "tool"
+        t_type = t.get("type")
+        if t_type == "hsv_roi":
+            mask = _hsv_hit_mask(img, t)
+        elif t_type == "contour_roi":
+            mask = _contour_hit_mask(img, t, results_by_tool.get(key))
+        else:
+            continue
+        canvas = cv2.bitwise_or(canvas, mask)
+
+    return canvas

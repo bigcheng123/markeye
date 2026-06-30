@@ -10,6 +10,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from .display_images import build_tool_binary_image, has_active_tools, tools_rois_to_json
 from .tool_builder import build_inspections, marks_to_json
 
 
@@ -28,32 +29,66 @@ def trigger_source_label(source: str) -> str:
     }.get(source, source)
 
 
+def _frame_images(
+    original: Optional[np.ndarray],
+    config: dict,
+    tool_results: Optional[list] = None,
+    quality: int = 70,
+) -> dict:
+    """组装原图 + 二值化图字段。"""
+    frame_info: dict = {
+        "width": 0,
+        "height": 0,
+        "process_ms": None,
+        "image_base64": None,
+        "original_base64": None,
+        "binary_base64": None,
+    }
+    if original is None or original.size == 0:
+        return frame_info
+
+    h, w = original.shape[:2]
+    orig_b64 = encode_image_b64(original, quality)
+    binary = build_tool_binary_image(original, config, tool_results)
+    if len(binary.shape) == 2:
+        binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+    binary_b64 = encode_image_b64(binary, quality)
+    frame_info = {
+        "width": w,
+        "height": h,
+        "process_ms": None,
+        "image_base64": orig_b64,
+        "original_base64": orig_b64,
+        "binary_base64": binary_b64,
+    }
+    return frame_info
+
+
 def build_idle_frame(
     config: dict,
     stats: dict,
     preview_image: Optional[np.ndarray] = None,
     marks: Optional[list] = None,
+    tool_results: Optional[list] = None,
 ) -> dict:
     cal = config.get("calibration", {})
     trigger = config.get("trigger", {})
     source = trigger.get("source", "internal")
     quality = int(config.get("output", {}).get("jpeg_quality", 70))
-    frame_info: dict = {"width": 0, "height": 0, "process_ms": None, "image_base64": None}
-    if preview_image is not None and preview_image.size > 0:
-        h, w = preview_image.shape[:2]
-        frame_info = {
-            "width": w,
-            "height": h,
-            "process_ms": None,
-            "image_base64": encode_image_b64(preview_image, quality),
-        }
+    frame_info = _frame_images(preview_image, config, tool_results, quality)
+    marks_json = (
+        []
+        if has_active_tools(config)
+        else marks_to_json(marks or [])
+    )
     return {
         "type": "frame",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "idle": True,
         "overall": {"passed": None},
         "frame": frame_info,
-        "marks": marks_to_json(marks or []),
+        "marks": marks_json,
+        "tool_rois": tools_rois_to_json(config),
         "inspections": _idle_inspections(config),
         "stats": stats,
         "calibration": {"sample_count": cal.get("sample_count", 0)},
@@ -87,31 +122,39 @@ def build_result_frame(
     config: dict,
     stats: dict,
     pipeline_result,
-    display_image: np.ndarray,
+    original_image: np.ndarray,
 ) -> dict:
     cal = config.get("calibration", {})
     trigger = config.get("trigger", {})
     source = trigger.get("source", "internal")
     quality = int(config.get("output", {}).get("jpeg_quality", 70))
-    h, w = display_image.shape[:2]
     inspections = build_inspections(pipeline_result, config)
     passed = bool(pipeline_result.passed and not pipeline_result.error)
+    frame_info = _frame_images(
+        original_image,
+        config,
+        pipeline_result.tool_results,
+        quality,
+    )
+    frame_info["process_ms"] = pipeline_result.process_ms
+
+    marks_json = (
+        []
+        if has_active_tools(config)
+        else marks_to_json(
+            pipeline_result.marks,
+            pipeline_result.inspections,
+            passed,
+        )
+    )
 
     return {
         "type": "frame",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "overall": {"passed": passed},
-        "frame": {
-            "image_base64": encode_image_b64(display_image, quality),
-            "width": w,
-            "height": h,
-            "process_ms": pipeline_result.process_ms,
-        },
-        "marks": marks_to_json(
-            pipeline_result.marks,
-            pipeline_result.inspections,
-            passed,
-        ),
+        "frame": frame_info,
+        "marks": marks_json,
+        "tool_rois": tools_rois_to_json(config),
         "inspections": inspections,
         "stats": stats,
         "calibration": {"sample_count": cal.get("sample_count", 0)},

@@ -62,6 +62,73 @@ def _hsv_mean(bgr: np.ndarray, mask: Optional[np.ndarray]) -> tuple[int, int, in
     return (int(mean[0]), int(mean[1]), int(mean[2]))
 
 
+def _roi_pixel_mask(crop: RoiCrop) -> np.ndarray:
+    if crop.mask is not None:
+        return crop.mask
+    return np.full(crop.img.shape[:2], 255, dtype=np.uint8)
+
+
+def sample_hsv_in_roi(
+    img: np.ndarray,
+    roi: dict,
+    *,
+    min_saturation: int = 30,
+) -> tuple[int, int, int]:
+    """在 ROI 内取样代表性 HSV（优先高饱和度像素的中位数）。"""
+    crop = crop_roi(img, roi)
+    if crop.img.size == 0:
+        raise ValueError("ROI 越界/为空")
+
+    hsv = cv2.cvtColor(crop.img, cv2.COLOR_BGR2HSV)
+    roi_mask = _roi_pixel_mask(crop)
+    pixels = hsv[roi_mask > 0]
+    if pixels.size == 0:
+        return _hsv_mean(crop.img, crop.mask)
+
+    if min_saturation > 0:
+        chromatic = pixels[pixels[:, 1] >= min_saturation]
+        if chromatic.size > 0:
+            pixels = chromatic
+
+    med = np.median(pixels, axis=0)
+    return int(med[0]), int(med[1]), int(med[2])
+
+
+def compute_hsv_area_in_roi(
+    img: np.ndarray,
+    roi: dict,
+    h_lower: list,
+    h_upper: list,
+) -> dict:
+    """统计 ROI 内符合 HSV 范围的像素面积（与 OpenCV inRange 一致）。"""
+    crop = crop_roi(img, roi)
+    if crop.img.size == 0:
+        return {"match": 0, "total": 0, "ratio": 0.0}
+
+    lower = np.array([int(h_lower[0]), int(h_lower[1]), int(h_lower[2])], dtype=np.uint8)
+    upper = np.array([int(h_upper[0]), int(h_upper[1]), int(h_upper[2])], dtype=np.uint8)
+    hsv = cv2.cvtColor(crop.img, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, lower, upper)
+    roi_mask = _roi_pixel_mask(crop)
+    mask = cv2.bitwise_and(mask, roi_mask)
+    match = int(cv2.countNonZero(mask))
+    total = int(cv2.countNonZero(roi_mask))
+    return {
+        "match": match,
+        "total": total,
+        "ratio": float(match / total) if total else 0.0,
+    }
+
+
+def _parse_area_limit(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def run_hsv_roi_tool(img: np.ndarray, tool: dict) -> dict:
     roi = (tool or {}).get("roi", {}) or {}
     params = (tool or {}).get("params", {}) or {}
@@ -77,26 +144,41 @@ def run_hsv_roi_tool(img: np.ndarray, tool: dict) -> dict:
             "name": tool.get("name", "HSV"),
             "passed": False,
             "value": 0,
-            "threshold": 100,
+            "threshold": 0,
             "fail_reasons": ["ROI 越界/为空"],
             "details": {},
         }
 
-    h, s, v = _hsv_mean(crop.img, crop.mask)
-    in_range = (lower[0] <= h <= upper[0]) and (lower[1] <= s <= upper[1]) and (lower[2] <= v <= upper[2])
-    value = 100 if in_range else 0
+    area_info = compute_hsv_area_in_roi(img, roi, lower, upper)
+    match = int(area_info["match"])
+    roi_total = int(area_info["total"])
+    area_min = _parse_area_limit(params.get("match_area_min"), 0)
+    area_max = _parse_area_limit(params.get("match_area_max"), roi_total if roi_total > 0 else match)
+
+    in_range = area_min <= match <= area_max
+    fail_reasons: list[str] = []
+    if not in_range:
+        if match < area_min:
+            fail_reasons.append(f"匹配面积 {match}px 低于下限 {area_min}px")
+        else:
+            fail_reasons.append(f"匹配面积 {match}px 超过上限 {area_max}px")
+
     return {
         "tool": tool.get("id", tool.get("name", "hsv_roi")),
         "name": tool.get("name", "色彩识别"),
         "passed": bool(in_range),
-        "value": int(value),
-        "threshold": 100,
-        "fail_reasons": [] if in_range else [f"HSV 超出范围 (实际={h},{s},{v})"],
+        "value": match,
+        "threshold": area_max,
+        "fail_reasons": fail_reasons,
         "details": {
-            "hsv": [h, s, v],
             "lower": lower,
             "upper": upper,
             "roi": roi,
+            "match_area": match,
+            "match_area_min": area_min,
+            "match_area_max": area_max,
+            "roi_total": roi_total,
+            "match_ratio": area_info["ratio"],
         },
     }
 

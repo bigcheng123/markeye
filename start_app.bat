@@ -25,7 +25,7 @@ if errorlevel 1 (
 echo.
 echo 启动中...
 echo   UI:  http://localhost:8080/template/
-echo   Mock: http://localhost:8080/template/?mock=1
+echo   Mock: http://localhost:8080/template/?mock=0
 echo.
 echo 关闭本窗口将停止服务。
 echo ----------------------------------------

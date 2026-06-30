@@ -46,11 +46,11 @@ export async function runUiDemo(app) {
   await step("RUN 模式 — 处理视图切换", async () => {
     const sel = document.querySelector("#process-mode");
     if (sel) {
-      sel.value = "binary";
-      sel.dispatchEvent(new Event("change"));
-      await delay(200);
-      sel.value = "overlay";
-      sel.dispatchEvent(new Event("change"));
+      for (const mode of ["original", "binary", "overlay"]) {
+        sel.value = mode;
+        sel.dispatchEvent(new Event("change"));
+        await delay(200);
+      }
     }
   });
 
@@ -107,13 +107,13 @@ export async function runUiDemo(app) {
 
   await step("向导 STEP1 — AI拍摄", async () => {
     document.querySelector('[data-action="ai-shoot"]')?.click();
-    await delay(300);
+    await delay(400);
     document.querySelector("#wizard-next")?.click();
     await delay(400);
   });
 
   await step("向导 STEP2 — 注册主控", async () => {
-    document.querySelector('[data-action="register-history"]')?.click();
+    document.querySelector('[data-action="register-live"]')?.click();
     await delay(300);
     document.querySelector("#wizard-next")?.click();
     await delay(400);

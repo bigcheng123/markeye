@@ -45,3 +45,20 @@ def test_stats_reset(client):
     res = client.post("/api/stats/reset")
     assert res.status_code == 200
     assert res.json()["ok"] is True
+
+
+def test_config_switch(client, tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("trigger:\n  source: external\n", encoding="utf-8")
+    (config_dir / "other.yaml").write_text("trigger:\n  source: internal\n", encoding="utf-8")
+    state.config_store.config_dir = config_dir
+    state.config_store._active = "config.yaml"
+    state.config_store._cache = None
+
+    res = client.post("/api/config/switch", json={"name": "other.yaml"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["active"] == "other.yaml"
+    assert state.config_store.get_cached()["trigger"]["source"] == "internal"

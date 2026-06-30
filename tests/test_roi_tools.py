@@ -3,7 +3,7 @@
 import numpy as np
 import cv2
 
-from src.tools.roi_tools import crop_roi, run_hsv_roi_tool, run_contour_roi_tool
+from src.tools.roi_tools import crop_roi, run_hsv_roi_tool, run_contour_roi_tool, compute_hsv_area_in_roi, sample_hsv_in_roi
 
 
 def test_crop_roi_rect_bounds():
@@ -22,7 +22,7 @@ def test_crop_roi_circle_has_mask():
     assert crop.mask.dtype == np.uint8
 
 
-def test_hsv_roi_tool_passes_for_green():
+def test_hsv_roi_tool_passes_when_match_area_in_range():
     img = np.zeros((120, 160, 3), dtype=np.uint8)
     # BGR green
     img[40:80, 60:100] = (0, 255, 0)
@@ -32,11 +32,83 @@ def test_hsv_roi_tool_passes_for_green():
         "type": "hsv_roi",
         "enabled": True,
         "roi": {"shape": "rect", "x": 60, "y": 40, "w": 40, "h": 40},
-        "params": {"h_lower": [35, 50, 50], "h_upper": [85, 255, 255]},
+        "params": {
+            "h_lower": [35, 50, 50],
+            "h_upper": [85, 255, 255],
+            "match_area_min": 100,
+            "match_area_max": 2000,
+        },
     }
     r = run_hsv_roi_tool(img, tool)
     assert r["passed"] is True
     assert r["tool"] == "01"
+    assert r["value"] == 40 * 40
+    assert r["details"]["match_area_min"] == 100
+    assert r["details"]["match_area_max"] == 2000
+
+
+def test_hsv_roi_tool_fails_when_match_area_below_min():
+    img = np.zeros((120, 160, 3), dtype=np.uint8)
+    img[55:65, 75:85] = (0, 255, 0)
+    tool = {
+        "id": "01",
+        "type": "hsv_roi",
+        "roi": {"shape": "rect", "x": 60, "y": 40, "w": 40, "h": 40},
+        "params": {
+            "h_lower": [35, 50, 50],
+            "h_upper": [85, 255, 255],
+            "match_area_min": 500,
+            "match_area_max": 2000,
+        },
+    }
+    r = run_hsv_roi_tool(img, tool)
+    assert r["passed"] is False
+    assert r["value"] < 500
+
+
+def test_hsv_roi_tool_fails_when_match_area_above_max():
+    img = np.zeros((120, 160, 3), dtype=np.uint8)
+    img[40:80, 60:100] = (0, 255, 0)
+    tool = {
+        "id": "01",
+        "type": "hsv_roi",
+        "roi": {"shape": "rect", "x": 60, "y": 40, "w": 40, "h": 40},
+        "params": {
+            "h_lower": [35, 50, 50],
+            "h_upper": [85, 255, 255],
+            "match_area_min": 0,
+            "match_area_max": 100,
+        },
+    }
+    r = run_hsv_roi_tool(img, tool)
+    assert r["passed"] is False
+    assert r["value"] > 100
+
+
+def test_compute_hsv_area_orange():
+    img = np.zeros((120, 160, 3), dtype=np.uint8)
+    # BGR orange
+    img[40:80, 60:100] = (0, 140, 255)
+    roi = {"shape": "rect", "x": 60, "y": 40, "w": 40, "h": 40}
+    h, s, v = sample_hsv_in_roi(img, roi)
+    assert 8 <= h <= 25
+    assert s >= 100
+    area = compute_hsv_area_in_roi(
+        img,
+        roi,
+        [max(0, h - 10), max(0, s - 40), max(0, v - 40)],
+        [min(180, h + 10), min(255, s + 40), min(255, v + 40)],
+    )
+    assert area["match"] > 100
+    assert area["total"] == 40 * 40
+
+
+def test_compute_hsv_area_mismatch_is_zero():
+    img = np.zeros((120, 160, 3), dtype=np.uint8)
+    img[40:80, 60:100] = (0, 140, 255)
+    roi = {"shape": "rect", "x": 60, "y": 40, "w": 40, "h": 40}
+    area = compute_hsv_area_in_roi(img, roi, [72, 0, 5], [92, 63, 85])
+    assert area["match"] == 0
 
 
 def test_contour_roi_tool_rect_with_expected_pass():

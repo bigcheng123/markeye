@@ -366,7 +366,8 @@ body {
 .app-root.view-wizard #region-run-footer { display: none; }
 .app-root.view-wizard #wizard-step-nav { display: flex !important; }
 .app-root.view-wizard #wizard-footer { display: flex !important; }
-.app-root.view-wizard .program-bar-section { display: none; }
+.app-root.view-wizard .program-bar-section { display: flex; }
+.app-root.view-wizard .program-actions { display: none; }
 
 /* Banner & toast */
 #connection-banner {
