@@ -1,5 +1,7 @@
 """Web API 集成测试"""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -411,7 +413,7 @@ def test_history_buffered_and_flushed_on_profile_switch(client, tmp_path):
     assert web_server.state.history.pending_count() == 0
 
     hist_dir = tmp_path / "output" / "history"
-    files = list(hist_dir.glob("inspection_*.csv"))
+    files = list(hist_dir.glob("*/inspection.csv"))
     assert len(files) == 1
     with files[0].open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
@@ -614,8 +616,10 @@ def test_save_current_frame(client, sample_image, tmp_path, monkeypatch):
     data = res.json()
     assert data["ok"] is True
     assert data["filename"].startswith("capture_")
-    saved = tmp_path / "output" / "captures" / data["filename"]
+    saved = Path(data["path"])
     assert saved.is_file()
+    assert len(saved.parent.name) == 8 and saved.parent.name.isdigit()
+    assert str(saved.parent).replace("\\", "/") == data["dir"]
     img = cv2.imread(str(saved))
     assert img is not None
     assert opened

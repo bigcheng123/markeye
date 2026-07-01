@@ -66,7 +66,7 @@ def test_flush_writes_daily_csv(tmp_path):
     written = store.flush()
     assert written == 1
     assert store.pending_count() == 0
-    path = tmp_path / "output" / "history" / "inspection_20260701.csv"
+    path = tmp_path / "output" / "history" / "20260701" / "inspection.csv"
     assert path.exists()
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
@@ -91,7 +91,7 @@ def test_flush_skips_duplicate_seq_in_file(tmp_path):
     store.record(passed=True, process_ms=8, seq=8, timestamp="2026-07-01 11:02:00")
     written = store.flush()
     assert written == 1
-    path = tmp_path / "output" / "history" / "inspection_20260701.csv"
+    path = tmp_path / "output" / "history" / "20260701" / "inspection.csv"
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
     seqs = [int(r["seq"]) for r in rows]

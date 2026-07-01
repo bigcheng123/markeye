@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from .utils import dated_archive_dir
+
 CSV_COLUMNS = ("timestamp", "profile", "result", "ng_items", "process_ms", "seq")
 CSV_BOM = "\ufeff"
 
@@ -117,8 +119,8 @@ class InspectionHistoryStore:
         return len(self._buffer)
 
     def _file_for_date(self, day: datetime) -> Path:
-        name = f"inspection_{day.strftime('%Y%m%d')}.csv"
-        return self._history_dir() / name
+        day_dir = dated_archive_dir(self._history_dir(), day)
+        return day_dir / "inspection.csv"
 
     def _load_existing_seqs(self, path: Path) -> set[int]:
         if not path.exists():
@@ -142,9 +144,6 @@ class InspectionHistoryStore:
             return 0
         if not self._buffer:
             return 0
-
-        hist_dir = self._history_dir()
-        hist_dir.mkdir(parents=True, exist_ok=True)
 
         by_file: dict[Path, list[HistoryRecord]] = {}
         for rec in self._buffer:

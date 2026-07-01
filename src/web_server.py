@@ -945,7 +945,7 @@ async def save_current_frame(body: Optional[dict] = None):
         "ok": True,
         "path": str(path).replace("\\", "/"),
         "filename": path.name,
-        "dir": str(save_dir).replace("\\", "/"),
+        "dir": str(path.parent).replace("\\", "/"),
     }
 
 
