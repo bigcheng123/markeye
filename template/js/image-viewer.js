@@ -19,6 +19,7 @@ export class ImageViewer {
     this.imgWidth = 800;
     this.imgHeight = 500;
     this.processMode = "overlay";
+    this.overlayVisible = true;
     this._lastMarks = [];
     this._lastToolRois = [];
     this._previewCamSlot = 0;
@@ -781,7 +782,18 @@ export class ImageViewer {
     return this._previewCamSlot ?? 0;
   }
 
+  setOverlayVisible(visible) {
+    this.overlayVisible = !!visible;
+    if (this.svg) {
+      this.svg.style.visibility = this.overlayVisible ? "" : "hidden";
+    }
+    if (this.overlayVisible) {
+      this.refreshOverlays();
+    }
+  }
+
   refreshOverlays() {
+    if (!this.overlayVisible) return;
     this._drawOverlays();
     this._drawRoiOverlay();
   }

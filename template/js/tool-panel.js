@@ -10,6 +10,7 @@ export class ToolPanel {
     this.history = {};
     this._meta = { ...getToolMeta() };
     this._cardEls = new Map();
+    this._lastActiveTools = [];
     this._chartRaf = null;
     this._bindList();
     this._renderDetailShell();
@@ -46,9 +47,9 @@ export class ToolPanel {
     });
   }
 
-  selectTool(tool) {
-    // 再次点击当前工具：取消选择并恢复默认画面
-    if (tool && this.selectedTool === tool) {
+  selectTool(tool, { force = false } = {}) {
+    // 再次点击当前工具：取消选择并恢复默认画面（cycleTool 使用 force 跳过）
+    if (!force && tool && this.selectedTool === tool) {
       this.selectedTool = null;
     } else {
       this.selectedTool = tool;
@@ -59,6 +60,16 @@ export class ToolPanel {
     this._renderDetail(this._lastInspections, this._lastStats);
     this.detailEl?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     this.onToolSelect?.(this.selectedTool);
+  }
+
+  /** 循环切换选中工具；返回新选中的 tool id，无可用工具时返回 null */
+  cycleTool() {
+    const tools = this._lastActiveTools || [];
+    if (!tools.length) return null;
+    const idx = this.selectedTool ? tools.indexOf(this.selectedTool) : -1;
+    const next = tools[(idx + 1) % tools.length];
+    this.selectTool(next, { force: true });
+    return next;
   }
 
   focusThreshold() {

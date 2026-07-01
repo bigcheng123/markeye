@@ -75,7 +75,7 @@ export async function runUiDemo(app) {
     app.clickEl("#btn-save-frame");
   });
 
-  await step("RUN 模式 — 切换输入源", async () => {
+  await step("RUN 模式 — 切换视图", async () => {
     app.clickEl("#btn-switch");
   });
 
@@ -135,7 +135,7 @@ export async function runUiDemo(app) {
   });
 
   await step("向导 STEP4 — 输出分配 Tab", async () => {
-    const tabs = ["logic", "autoswitch", "ext1", "output"];
+    const tabs = ["logic", "autoswitch", "modbus", "ext2", "output"];
     for (const t of tabs) {
       document.querySelector(`.wizard-tab[data-tab="${t}"]`)?.click();
       await delay(250);

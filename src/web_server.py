@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,6 +43,7 @@ from .frame_codec import (
 from .io.modbus_client import ModbusIOService
 from .pipeline import DetectionPipeline
 from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, hsv_hit_mask, run_roi_tools, sample_hsv_in_roi
+from .inspection_history import InspectionHistoryStore
 from .stats_store import StatsStore
 from .utils import json_safe, setup_logger
 from .version import get_app_meta
@@ -58,6 +61,13 @@ class AppState:
         cfg = self.config_store.load()
         stats_path = cfg.get("output", {}).get("stats_file", "output/stats.json")
         self.stats = StatsStore(str(ROOT / stats_path))
+        self.history = InspectionHistoryStore(
+            ROOT,
+            get_config=self.config_store.get_cached,
+            get_profile=lambda: self.config_store._active,
+        )
+        self._last_detection_at: float = time.monotonic()
+        self._idle_flush_task: Optional[asyncio.Task] = None
         self.calibration = CalibrationService(self.config_store, str(ROOT))
         self.camera = CameraService(cfg)
         self.io = ModbusIOService(cfg)
@@ -189,6 +199,22 @@ class AppState:
         results = self.camera.connect_all(devices)
         return results.get(0, False)
 
+    def switch_profile(self, name: str) -> dict:
+        """切换配方；切换前按配置落盘检查履历缓冲。"""
+        if self.history.flush_on_profile_switch():
+            self.history.flush()
+        cfg = self.config_store.switch(name)
+        self.reload_services()
+        return cfg
+
+    def maybe_flush_idle_history(self) -> None:
+        """待机超时后落盘缓冲履历。"""
+        idle_min = self.history.flush_on_idle_minutes()
+        if idle_min <= 0 or self.history.pending_count() == 0:
+            return
+        if time.monotonic() - self._last_detection_at >= idle_min * 60:
+            self.history.flush()
+
     async def broadcast(self, payload: dict) -> None:
         safe = json_safe(payload)
         self._last_frame_payload = safe
@@ -201,7 +227,12 @@ class AppState:
         for ws in dead:
             self.ws_clients.discard(ws)
 
-    def run_detection(self, images: np.ndarray | dict[int, np.ndarray]) -> dict:
+    def run_detection(
+        self,
+        images: np.ndarray | dict[int, np.ndarray],
+        *,
+        skip_archive: bool = False,
+    ) -> dict:
         cfg = self.config_store.get_cached()
         if not has_active_tools(cfg):
             if isinstance(images, dict):
@@ -227,12 +258,34 @@ class AppState:
         frames = images if isinstance(images, dict) else {0: images}
         result = self.pipeline.run(frames)
         self.stats.record_success(result.passed, result.process_ms)
+        if not skip_archive:
+            self._last_detection_at = time.monotonic()
+            snap = self.stats.snapshot()
+            self.history.record(
+                passed=result.passed,
+                process_ms=result.process_ms,
+                seq=snap.get("trigger_total", 0),
+                tool_results=result.tool_results,
+            )
         self.io.write_result(result.passed, tool_results=result.tool_results)
         save_img = result.result_image if result.result_image is not None else primary
-        maybe_save_result(cfg, result.passed, save_img)
+        if not skip_archive:
+            maybe_save_result(cfg, result.passed, save_img)
         return build_result_frame(
             cfg, self.stats.snapshot(), result, primary, preview_cam=preview_cam
         )
+
+
+async def _idle_history_flush_loop() -> None:
+    """周期性检查待机时间，超时则落盘检查履历。"""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await asyncio.to_thread(state.maybe_flush_idle_history)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("待机履历落盘检查异常: %s", exc)
 
 
 state = AppState()
@@ -259,13 +312,21 @@ async def lifespan(app: FastAPI):
     )
     asyncio.create_task(_startup_hardware())
     state._preview_task = asyncio.create_task(_preview_loop())
+    state._idle_flush_task = asyncio.create_task(_idle_history_flush_loop())
     if state.io.enabled:
         state._ensure_io_poll_task()
     logger.info("MarkEye Web 服务已启动")
     yield
     if state._preview_task:
         state._preview_task.cancel()
+    if state._idle_flush_task:
+        state._idle_flush_task.cancel()
+        try:
+            await state._idle_flush_task
+        except asyncio.CancelledError:
+            pass
     await state._stop_io_poll_task()
+    state.history.flush()
     state.stats.flush()
     state.camera.disconnect()
     state.io.disconnect()
@@ -341,11 +402,17 @@ async def _handle_io_switch_program() -> None:
 
     if target_name and target_name != state.config_store._active:
         try:
-            state.config_store.switch(target_name)
-            state.reload_services()
+            await asyncio.to_thread(state.switch_profile, target_name)
             logger.info("IO: 已切换程序 → %s", target_name)
         except FileNotFoundError as exc:
             logger.warning("IO: 切换程序失败: %s", exc)
+
+
+async def _schedule_restart() -> None:
+    """延迟重启 Python 进程（产线由外部启动脚本拉起）。"""
+    await asyncio.sleep(0.5)
+    logger.info("正在重启软件…")
+    os.execv(sys.executable, [sys.executable, "-m", "src.web_server"])
 
 
 async def _io_poll_loop():
@@ -386,8 +453,6 @@ async def _io_poll_loop():
                     break
                 if role == "switch_program":
                     await _handle_io_switch_program()
-                elif role == "restart":
-                    logger.info("IO: 收到重启软件请求（需外部署脚本执行）")
 
             await asyncio.sleep(poll_s)
         except asyncio.CancelledError:
@@ -431,8 +496,16 @@ async def health():
         "available_cameras": cameras,
         "using_fallback": state.camera.using_fallback,
         "io": state.io.status(),
-        "app": get_app_meta(ROOT, base=float(cfg.get("app", {}).get("version_base", 0.0))),
+        "app": get_app_meta(ROOT),
     }
+
+
+@app.post("/api/system/restart")
+async def system_restart():
+    """重启 Web 服务进程。"""
+    logger.info("收到重启软件请求")
+    asyncio.create_task(_schedule_restart())
+    return {"ok": True}
 
 
 @app.get("/api/io/status")
@@ -522,7 +595,7 @@ async def device():
         "name": hostname,
         "ip": "127.0.0.1",
         "mac": "00:00:00:00:00:00",
-        "app": get_app_meta(ROOT, base=float(cfg.get("app", {}).get("version_base", 0.0))),
+        "app": get_app_meta(ROOT),
     }
 
 
@@ -554,8 +627,7 @@ class ProfileSwitchBody(BaseModel):
 @app.post("/api/config/switch")
 async def switch_config(body: ProfileSwitchBody):
     try:
-        cfg = state.config_store.switch(body.name)
-        state.reload_services()
+        cfg = await asyncio.to_thread(state.switch_profile, body.name)
         return {"ok": True, "active": body.name, "config": cfg}
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -745,17 +817,22 @@ async def tools_hsv_match_preview(body: dict):
     }
 
 
-def _trigger_capture_and_detect() -> dict:
+def _trigger_capture_and_detect(*, skip_archive: bool = False) -> dict:
     cfg = state.config_store.get_cached()
     slots = required_tool_cam_slots(cfg) if has_active_tools(cfg) else None
     frames = state.camera.capture_all_for_trigger(slots)
-    return state.run_detection(frames)
+    return state.run_detection(frames, skip_archive=skip_archive)
+
+
+class TriggerBody(BaseModel):
+    continuous: bool = False
 
 
 @app.post("/api/trigger")
-async def trigger():
+async def trigger(body: Optional[TriggerBody] = None):
+    skip_archive = bool(body and body.continuous)
     state._preview_paused_until = time.monotonic() + PREVIEW_PAUSE_AFTER_TRIGGER_SEC
-    payload = await asyncio.to_thread(_trigger_capture_and_detect)
+    payload = await asyncio.to_thread(_trigger_capture_and_detect, skip_archive=skip_archive)
     await state.broadcast(payload)
     return payload
 

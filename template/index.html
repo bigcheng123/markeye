@@ -25,6 +25,11 @@
         <span class="menu-item" data-action="menu-settings">设定(<kbd>S</kbd>)</span>
         <span class="menu-item" data-action="menu-window">窗口(<kbd>W</kbd>)</span>
         <span class="menu-item" data-action="menu-help">帮助(<kbd>H</kbd>)</span>
+        <span class="menu-spacer" aria-hidden="true"></span>
+        <div id="modbus-status" class="modbus-status modbus-status--unknown" aria-live="polite" title="当前 MODBUS 连接状态">
+          <span class="modbus-status__dot" aria-hidden="true"></span>
+          <span class="modbus-status__text">MODBUS: —</span>
+        </div>
       </nav>
 
       <div id="region-quick-toolbar" aria-label="传感器快捷操作">
@@ -153,8 +158,8 @@
             </table>
           </div>
           <div class="run-footer__actions">
-            <button type="button" id="btn-switch" class="btn btn-secondary" data-action="switch-source">
-              <img src="../icon/action/switch.svg" alt="" /> 切换
+            <button type="button" id="btn-switch" class="btn btn-secondary" data-action="cycle-tool">
+              <img src="../icon/action/switch.svg" alt="" /> 切换视图
             </button>
             <button type="button" id="btn-reset" class="btn btn-secondary btn-danger" data-action="reset-stats">
               <img src="../icon/action/reset.svg" alt="" /> 复位
@@ -179,12 +184,76 @@
 
       <!-- SET: 设定首页 -->
       <aside id="view-set-menu" class="set-menu" aria-label="传感器设定菜单">
-        <h2 class="set-menu__title">传感器设定菜单</h2>
-        <button type="button" id="btn-navi-wizard" class="btn-navi" data-action="navi-wizard">
-          <span class="btn-navi__icon">NAVI</span>
-          <span class="btn-navi__label">传感器设定</span>
-        </button>
-        <p class="set-menu__hint">按步骤设定判断对象物所需的设定项目。</p>
+        <div class="set-menu__header">
+          <h2 class="set-menu__title">传感器设定菜单</h2>
+          <button type="button" id="btn-navi-wizard" class="btn-navi" data-action="navi-wizard">
+            <span class="btn-navi__icon">NAVI</span>
+            <span class="btn-navi__label">传感器设定</span>
+          </button>
+          <p class="set-menu__hint">按步骤设定判断对象物所需的设定项目。</p>
+        </div>
+
+        <section class="set-menu__guide" aria-label="设定步骤说明">
+          <h3 class="set-menu__guide-title">设定步骤说明</h3>
+          <div class="set-menu__steps">
+            <article class="set-menu-step">
+              <header class="set-menu-step__head">
+                <span class="set-menu-step__num">STEP 1</span>
+                <span class="set-menu-step__name">拍摄条件</span>
+              </header>
+              <dl class="set-menu-step__detail">
+                <dt>设定项目</dt>
+                <dd>触发源、触发延迟、相机号码、曝光与增益</dd>
+                <dt>设定规则</dt>
+                <dd>先确认现场触发方式与相机连接正常，再在稳定光照下调节曝光与增益</dd>
+                <dt>注意要点</dt>
+                <dd>多相机时逐一确认各通道画面；条件稳定后再进入下一步</dd>
+              </dl>
+            </article>
+            <article class="set-menu-step">
+              <header class="set-menu-step__head">
+                <span class="set-menu-step__num">STEP 2</span>
+                <span class="set-menu-step__name">注册主控</span>
+              </header>
+              <dl class="set-menu-step__detail">
+                <dt>设定项目</dt>
+                <dd>各相机通道（CAM#0 / CAM#1）的主控参考图像</dd>
+                <dt>设定规则</dt>
+                <dd>使用合格品标准姿态注册；各通道分别注册对应画面</dd>
+                <dt>注意要点</dt>
+                <dd>主控图像是后续判断基准，避免使用 NG 品、遮挡物或光照异常的画面</dd>
+              </dl>
+            </article>
+            <article class="set-menu-step">
+              <header class="set-menu-step__head">
+                <span class="set-menu-step__num">STEP 3</span>
+                <span class="set-menu-step__name">工具设定</span>
+              </header>
+              <dl class="set-menu-step__detail">
+                <dt>设定项目</dt>
+                <dd>检查工具（色彩识别 / 轮廓识别）、ROI 区域、阈值与公差参数</dd>
+                <dt>设定规则</dt>
+                <dd>每个检查项对应一个工具；ROI 应完整框住标记区域并覆盖判定所需范围</dd>
+                <dt>注意要点</dt>
+                <dd>编辑后须保存参数；建议切换至运行模式用 OK/NG 样品验证后再继续</dd>
+              </dl>
+            </article>
+            <article class="set-menu-step">
+              <header class="set-menu-step__head">
+                <span class="set-menu-step__num">STEP 4</span>
+                <span class="set-menu-step__name">输出分配</span>
+              </header>
+              <dl class="set-menu-step__detail">
+                <dt>设定项目</dt>
+                <dd>OUT/IN 线分配、综合判断逻辑、自动切换程序、Modbus I/O 通信</dd>
+                <dt>设定规则</dt>
+                <dd>输出线映射检测结果与通信状态；输入线配置触发与程序切换信号</dd>
+                <dt>注意要点</dt>
+                <dd>完成全部设定后保存配方；启用 Modbus 前确认 PLC 地址与接线一致</dd>
+              </dl>
+            </article>
+          </div>
+        </section>
       </aside>
 
       <!-- SET: 向导右栏（步骤条与主画面状态栏顶对齐） -->
@@ -217,6 +286,7 @@
       <span>机器名称: <strong id="device-name">MarkEye-01</strong></span>
       <span>IP: <strong id="device-ip">127.0.0.1</strong></span>
       <span>MAC: <strong id="device-mac">00:00:00:00:00:01</strong></span>
+      <span class="device-status__version">版本: <strong id="device-version">1.0</strong></span>
     </footer>
   </div>
 

@@ -63,7 +63,6 @@ const IO_IN_OPTIONS = [
   { value: "off", label: "OFF" },
   { value: "trigger", label: "触发" },
   { value: "switch_program", label: "切换程序" },
-  { value: "restart", label: "重启软件" },
 ];
 
 const DEFAULT_OUTPUT_ASSIGNMENTS = [
@@ -80,13 +79,89 @@ const DEFAULT_OUTPUT_ASSIGNMENTS = [
 const DEFAULT_INPUT_ASSIGNMENTS = [
   "trigger",
   "switch_program",
-  "restart",
+  "off",
   "off",
   "off",
   "off",
   "off",
   "off",
 ];
+
+const DEFAULT_OUTPUT_CONFIG = () => ({
+  save_policy: "none",
+  history: {
+    enabled: false,
+    format: "csv",
+    dir: "output/history/",
+    flush_on_profile_switch: true,
+    flush_on_idle_minutes: 50,
+  },
+});
+
+function _normalizeOutputConfig(output) {
+  const base = DEFAULT_OUTPUT_CONFIG();
+  const src = output || {};
+  const hist = { ...base.history, ...(src.history || {}) };
+  const policy = ["none", "ok", "ng", "all"].includes(src.save_policy) ? src.save_policy : "none";
+  const idle = parseInt(hist.flush_on_idle_minutes, 10);
+  hist.flush_on_idle_minutes = Number.isFinite(idle) && idle >= 0 ? idle : 50;
+  return { ...base, ...src, save_policy: policy, history: hist };
+}
+
+function _renderArchivePanel(output) {
+  const out = _normalizeOutputConfig(output);
+  const policy = out.save_policy || "none";
+  const hist = out.history || {};
+  const histOn = hist.enabled === true;
+  const flushSwitch = hist.flush_on_profile_switch !== false;
+  const idleMin = hist.flush_on_idle_minutes ?? 50;
+  const idleOn = idleMin > 0;
+  const policyActive = (val) => (policy === val ? " is-active" : "");
+  return `
+    <section class="wizard-archive-section">
+      <h4 class="wizard-archive-section__title">图像保存</h4>
+      <div class="wizard-form-row">
+        <label>保存时机</label>
+        <div class="toggle-group" data-toggle="save-policy">
+          <button type="button" class="${policyActive("ok")}" data-val="ok">OK时</button>
+          <button type="button" class="${policyActive("ng")}" data-val="ng">NG时</button>
+          <button type="button" class="${policyActive("all")}" data-val="all">全部</button>
+          <button type="button" class="${policyActive("none")}" data-val="none">不保存</button>
+        </div>
+      </div>
+    </section>
+    <section class="wizard-archive-section">
+      <h4 class="wizard-archive-section__title">检查履历</h4>
+      <div class="wizard-form-row"><label>格式</label><span class="wizard-archive-readonly">CSV</span></div>
+      <div class="wizard-form-row wizard-form-row--stack">
+        <label>内容</label>
+        <p class="wizard-archive-hint">检查时间、配方程序、检查结果、NG项目、处理耗时(ms)</p>
+      </div>
+      <div class="wizard-form-row">
+        <label>履历保存</label>
+        <div class="toggle-group" data-toggle="history-enabled">
+          <button type="button" class="${histOn ? "is-active" : ""}" data-val="on">保存</button>
+          <button type="button" class="${!histOn ? "is-active" : ""}" data-val="off">不保存</button>
+        </div>
+      </div>
+      <div class="wizard-form-row wizard-form-row--stack">
+        <label>写档时机</label>
+        <div class="wizard-archive-flush">
+          <label class="wizard-archive-check">
+            <input type="checkbox" data-field="history-flush-profile" ${flushSwitch ? "checked" : ""} />
+            配方切换时
+          </label>
+          <label class="wizard-archive-check">
+            <input type="checkbox" data-field="history-flush-idle-enable" ${idleOn ? "checked" : ""} />
+            设备待机时间超过
+            <input type="number" data-field="history-flush-idle-minutes" value="${idleOn ? idleMin : 50}" min="1" max="9999" ${idleOn ? "" : "disabled"} />
+            分钟
+          </label>
+        </div>
+      </div>
+    </section>
+  `;
+}
 
 function _ioOutOptions(tools) {
   const toolOpts = (tools || []).map((t) => ({
@@ -441,6 +516,7 @@ export class Wizard {
     this._ioLiveOutputs = Array(IO_CHANNEL_COUNT).fill(false);
     this._ioConnected = false;
     this._ioPollTimer = null;
+    this._outputConfig = DEFAULT_OUTPUT_CONFIG();
 
     this._bindNav();
     this._render();
@@ -786,7 +862,7 @@ export class Wizard {
         <button type="button" class="wizard-tab ${this.tab === "logic" ? "is-active" : ""}" data-tab="logic">综合判断</button>
         <button type="button" class="wizard-tab ${this.tab === "autoswitch" ? "is-active" : ""}" data-tab="autoswitch">自动切换程序</button>
         <button type="button" class="wizard-tab ${this.tab === "modbus" ? "is-active" : ""}" data-tab="modbus">Modbus</button>
-        <button type="button" class="wizard-tab ${this.tab === "ext2" ? "is-active" : ""}" data-tab="ext2">扩展功能 2</button>
+        <button type="button" class="wizard-tab ${this.tab === "ext2" ? "is-active" : ""}" data-tab="ext2">存档设置</button>
       </div>
       <div class="wizard-tab-panel ${this.tab === "output" ? "is-active" : ""}" data-panel="output">
         <div class="wizard-io-grid">
@@ -897,7 +973,7 @@ export class Wizard {
           </div>
         </div>
       </div>
-      <div class="wizard-tab-panel ${this.tab === "ext2" ? "is-active" : ""}" data-panel="ext2"><p>扩展功能 2（Phase 2）</p></div>
+      <div class="wizard-tab-panel ${this.tab === "ext2" ? "is-active" : ""}" data-panel="ext2">${_renderArchivePanel(this._outputConfig)}</div>
     `;
   }
 
@@ -1007,6 +1083,10 @@ export class Wizard {
         btn.addEventListener("click", () => {
           this._refreshIoStatus();
         });
+      });
+      this.contentEl?.querySelector('[data-field="history-flush-idle-enable"]')?.addEventListener("change", (e) => {
+        const mins = this.contentEl?.querySelector('[data-field="history-flush-idle-minutes"]');
+        if (mins) mins.disabled = !e.target.checked;
       });
     }
 
@@ -1477,7 +1557,9 @@ export class Wizard {
         }
       }
       if (Array.isArray(io.input_assignments) && io.input_assignments.length) {
-        this._inputAssignments = [...io.input_assignments];
+        this._inputAssignments = io.input_assignments.map((role) =>
+          role === "restart" ? "off" : role,
+        );
         while (this._inputAssignments.length < IO_CHANNEL_COUNT) {
           this._inputAssignments.push("off");
         }
@@ -1485,6 +1567,9 @@ export class Wizard {
       const logic = parseInt(io.comprehensive_logic, 10);
       this._comprehensiveLogic = Number.isFinite(logic) && logic >= 1 && logic <= 4 ? logic : 1;
       this._trerrEnabled = io.trerr_enabled !== false;
+      if (data?.output) {
+        this._outputConfig = _normalizeOutputConfig(data.output);
+      }
       this._step4Loaded = true;
       if (this.step === 4) this._render();
     } catch {
@@ -2125,11 +2210,30 @@ export class Wizard {
       if (Number.isFinite(stopbits)) io.stopbits = stopbits;
 
       this._ioConfig = io;
+
+      const savePolicy =
+        el?.querySelector('[data-toggle="save-policy"] .is-active')?.dataset?.val || "none";
+      const histEnabled =
+        el?.querySelector('[data-toggle="history-enabled"] .is-active')?.dataset?.val === "on";
+      const flushProfile = el?.querySelector('[data-field="history-flush-profile"]')?.checked !== false;
+      const flushIdleOn = el?.querySelector('[data-field="history-flush-idle-enable"]')?.checked === true;
+      const idleRaw = parseInt(el?.querySelector('[data-field="history-flush-idle-minutes"]')?.value, 10);
+      const flushIdleMin = flushIdleOn && Number.isFinite(idleRaw) ? Math.max(1, idleRaw) : 0;
+      const output = {
+        save_policy: savePolicy,
+        history: {
+          enabled: histEnabled,
+          format: "csv",
+          dir: this._outputConfig?.history?.dir || "output/history/",
+          flush_on_profile_switch: flushProfile,
+          flush_on_idle_minutes: flushIdleMin,
+        },
+      };
+      this._outputConfig = _normalizeOutputConfig(output);
+
       return {
         io,
-        output: {
-          save_policy: el?.querySelector('[data-field="save-policy"]')?.value || "none",
-        },
+        output,
       };
     }
     if (this.step === 3) {

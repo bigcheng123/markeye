@@ -18,7 +18,7 @@ DEFAULT_OUTPUT_ASSIGNMENTS = [
 DEFAULT_INPUT_ASSIGNMENTS = [
     "trigger",
     "switch_program",
-    "restart",
+    "off",
     "off",
     "off",
     "off",
@@ -131,6 +131,10 @@ def normalize_io_assignments(io: dict | None) -> dict:
         input_assignments = _pad_assignments(raw_in)
     else:
         input_assignments = _migrate_input_assignments(io)
+
+    input_assignments = [
+        "off" if role == "restart" else role for role in input_assignments
+    ]
 
     io["output_assignments"] = output_assignments
     io["input_assignments"] = input_assignments

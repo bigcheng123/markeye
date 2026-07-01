@@ -187,6 +187,63 @@ function infoModalContent(title, content, { html = false } = {}) {
   });
 }
 
+export function showMenuPopup(anchorEl, items) {
+  return new Promise((resolve) => {
+    document.querySelectorAll(".menu-popup").forEach((el) => el.remove());
+
+    const popup = document.createElement("div");
+    popup.className = "menu-popup";
+    popup.setAttribute("role", "menu");
+
+    for (const item of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "menu-popup__item";
+      btn.textContent = item.label;
+      btn.dataset.action = item.action;
+      if (item.title) btn.title = item.title;
+      if (item.checked) btn.classList.add("is-checked");
+      if (item.disabled) btn.disabled = true;
+      if (item.separator) {
+        btn.classList.add("menu-popup__item--separator");
+        btn.disabled = true;
+      }
+      popup.appendChild(btn);
+    }
+
+    document.body.appendChild(popup);
+    const rect = anchorEl.getBoundingClientRect();
+    popup.style.top = `${rect.bottom}px`;
+    popup.style.left = `${rect.left}px`;
+
+    const cleanup = (action) => {
+      popup.remove();
+      document.removeEventListener("click", onDocClick, true);
+      document.removeEventListener("keydown", onKey);
+      resolve(action);
+    };
+
+    popup.addEventListener("click", (e) => {
+      const item = e.target.closest(".menu-popup__item");
+      if (item && !item.disabled && item.dataset.action) {
+        cleanup(item.dataset.action);
+      }
+    });
+
+    const onDocClick = (e) => {
+      if (!popup.contains(e.target) && e.target !== anchorEl) cleanup(null);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") cleanup(null);
+    };
+
+    setTimeout(() => {
+      document.addEventListener("click", onDocClick, true);
+      document.addEventListener("keydown", onKey);
+    }, 0);
+  });
+}
+
 export function showToast(message, type = "ok") {
   const container = document.querySelector("#toast-container");
   if (!container) return;

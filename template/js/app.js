@@ -25,6 +25,7 @@ import {
   createMasterFramePayload,
 } from "./mock-data.js";
 import { runUiDemo } from "./ui-demo.js";
+import { bindMenuBar } from "./menu-bar.js";
 
 class MarkEyeApp {
   constructor() {
@@ -43,6 +44,7 @@ class MarkEyeApp {
     this._continuousTrigger = false;
     this._continuousTriggerTimer = null;
     this._lastNgAlertAt = 0;
+    this._ioStatusTimer = null;
     this.api = null;
     this._mockCameras = [0, 1, 2];
     this._mockCameraId = 0;
@@ -61,12 +63,79 @@ class MarkEyeApp {
       hasMaster: () => this.hasMasterRegistered,
     });
 
+    this._modbusStatusEl = document.querySelector("#modbus-status");
+    this._setModbusStatus({ state: "unknown", text: "MODBUS: —" });
+
     this._bindModeTabs();
     this._bindGlobalActions();
+    bindMenuBar(this);
     this._bindRunActions();
     this._bindKeyboard();
     this._bindToolPreview();
     initLayout();
+  }
+
+  _setModbusStatus({ state = "unknown", text = "MODBUS: —", title = "" } = {}) {
+    const el = this._modbusStatusEl;
+    if (!el) return;
+    el.className = `modbus-status modbus-status--${state || "unknown"}`;
+    const textEl = el.querySelector(".modbus-status__text");
+    if (textEl) textEl.textContent = text;
+    if (title) el.title = title;
+  }
+
+  _startIoStatusPoll() {
+    if (this._ioStatusTimer) return;
+    const tick = () => void this._refreshIoStatusForMenu();
+    tick();
+    this._ioStatusTimer = setInterval(tick, 800);
+  }
+
+  _stopIoStatusPoll() {
+    if (!this._ioStatusTimer) return;
+    clearInterval(this._ioStatusTimer);
+    this._ioStatusTimer = null;
+  }
+
+  async _refreshIoStatusForMenu() {
+    if (!this._modbusStatusEl) return;
+
+    if (isMockMode()) {
+      this._setModbusStatus({ state: "ok", text: "MODBUS: Mock", title: "Mock 模式" });
+      return;
+    }
+
+    if (!this.api?._connected) {
+      this._setModbusStatus({ state: "unknown", text: "MODBUS: 后端断开", title: "WebSocket/后端未连接" });
+      return;
+    }
+
+    try {
+      const s = await this.api.get("/api/io/status");
+      const enabled = !!s?.enabled;
+      const connected = !!s?.connected;
+      const last = String(s?.last_error || "");
+
+      if (!enabled) {
+        this._setModbusStatus({ state: "disabled", text: "MODBUS: 未启用", title: "IO 未启用（STEP4 可启用）" });
+        return;
+      }
+
+      if (connected) {
+        this._setModbusStatus({ state: "ok", text: "MODBUS: 已连接", title: "Modbus 已连接" });
+        return;
+      }
+
+      if (last.includes("pymodbus_not_installed")) {
+        this._setModbusStatus({ state: "err", text: "MODBUS: 缺少 pymodbus", title: "pymodbus 未安装，IO 将以日志模式运行" });
+        return;
+      }
+
+      const hint = last ? `last_error: ${last}` : "未连接";
+      this._setModbusStatus({ state: "err", text: "MODBUS: 未连接", title: hint });
+    } catch {
+      this._setModbusStatus({ state: "unknown", text: "MODBUS: 状态未知", title: "无法获取 /api/io/status" });
+    }
   }
 
   _camSlotToDeviceId(camSlot, cameras = this._lastCameraList) {
@@ -124,6 +193,7 @@ class MarkEyeApp {
         showConnectionBanner(!connected && !isMockMode() && needsLiveStream);
         if (!connected) {
           this._stopContinuousTrigger();
+          this._setModbusStatus({ state: "unknown", text: "MODBUS: 后端断开", title: "WebSocket/后端未连接" });
         }
         if (!connected && this.view === "run") {
           this.statusBar.setIdle();
@@ -134,8 +204,10 @@ class MarkEyeApp {
       },
     });
     this._loadProfiles();
+    this._loadDeviceStatus();
     this._setView("run");
     this.syncCameraSelect();
+    this._startIoStatusPoll();
     requestAnimationFrame(() => {
       this.imageViewer.fitToScreen();
       requestAnimationFrame(() => this.imageViewer.fitToScreen());
@@ -347,6 +419,28 @@ class MarkEyeApp {
       }
     } catch {
       /* 保持 HTML 默认项 */
+    }
+  }
+
+  async _loadDeviceStatus() {
+    const set = (id, value) => {
+      const el = document.querySelector(id);
+      if (el && value != null) el.textContent = String(value);
+    };
+    if (isMockMode()) {
+      set("#device-model", "MarkEye-Cam (Mock)");
+      return;
+    }
+    try {
+      const data = await this.api.get("/api/device");
+      set("#device-model", data.model);
+      set("#device-name", data.name);
+      set("#device-ip", data.ip);
+      set("#device-mac", data.mac);
+      const version = data.app?.version;
+      if (version) set("#device-version", version);
+    } catch {
+      /* 保持 HTML 默认占位 */
     }
   }
 
@@ -830,6 +924,13 @@ class MarkEyeApp {
       this.wizard.reloadForProfile(step);
       await this.loadMasterThumbnails();
       await this._onWizardStepChange(step);
+    } else if (this.view === "run" || this.view === "set") {
+      await this.api.post("/api/config/switch", { name });
+      await this.syncCameraSelect();
+      if (this.view === "run") {
+        if (isMockMode()) this._onFrame(createIdleFrame());
+        else this.api?.pullCurrentFrame?.();
+      }
     }
   }
 
@@ -843,32 +944,13 @@ class MarkEyeApp {
   }
 
   _bindGlobalActions() {
-    const menuActions = {
-      "menu-file": "文件：打开图片 / 导出结果 / 退出（Mock）",
-      "menu-view": "显示：叠加层 / 调试图层切换（Mock）",
-      "menu-sensor": "传感器：相机选择 / 曝光增益（Mock）",
-      "menu-image": "图像：截图 / 保存当前帧（Mock）",
-      "menu-settings": "设定：切换至设定模式",
-      "menu-window": "窗口：全屏 / 置顶（Mock）",
-      "menu-help": isMockMode()
-        ? "MarkEye Web UI — Mock 模式 (?mock=1)"
-        : "MarkEye Web UI — 已连接后端",
-    };
-
-    document.querySelectorAll(".menu-item[data-action]").forEach((el) => {
-      el.addEventListener("click", () => {
-        const action = el.dataset.action;
-        if (action === "menu-settings") {
-          this._setView("set");
-          return;
-        }
-        showToast(menuActions[action] || action, "ok");
-      });
-    });
-
     document.querySelector("#btn-sensor-switch")?.addEventListener("click", async () => {
-      await this.api?.post("/api/camera/switch");
-      showToast("已切换连接的传感器（Mock）", "ok");
+      try {
+        await this.api?.post("/api/camera/switch");
+        showToast("已切换连接的传感器", "ok");
+      } catch {
+        showToast("切换传感器失败", "err");
+      }
     });
 
     document.querySelector("#btn-sensor-disconnect")?.addEventListener("click", async () => {
@@ -880,7 +962,7 @@ class MarkEyeApp {
     });
 
     document.querySelector("#btn-connect-monitor")?.addEventListener("click", () => {
-      showToast("连接监控器（Phase 2 Mock）", "ok");
+      showToast("连接监控器（Phase 2 尚未实现）", "warn");
     });
 
     document.querySelector("#btn-details")?.addEventListener("click", () => {
@@ -952,9 +1034,10 @@ class MarkEyeApp {
       showToast("统计已复位", "ok");
     });
 
-    document.querySelector("#btn-switch")?.addEventListener("click", async () => {
-      await this.api?.post("/api/camera/switch");
-      showToast("已切换输入源（Mock）", "ok");
+    document.querySelector("#btn-switch")?.addEventListener("click", () => {
+      if (this.view !== "run") return;
+      const next = this.toolPanel.cycleTool();
+      if (!next) showToast("暂无可用工具", "warn");
     });
 
     this._bindWizardDelegatedActions();
@@ -986,14 +1069,14 @@ class MarkEyeApp {
   }
 
   async _doTrigger(options = {}) {
-    const { silent = false } = options;
+    const { silent = false, continuous = this._continuousTrigger } = options;
     if (!this.api?._connected) {
       if (!silent) showToast("请先连接传感器", "err");
       else if (this._continuousTrigger) this._stopContinuousTrigger();
       return;
     }
     this._ignoreIdleUntil = performance.now() + 700;
-    const frame = await this.api.trigger();
+    const frame = await this.api.trigger({ continuous: !!continuous });
     if (frame) {
       // WebSocket 推送 onFrame；WS 断连时 post() 会 fallback 调用 onFrame
       if (!silent && !frame.idle && frame.overall?.passed != null) {
@@ -1059,6 +1142,22 @@ class MarkEyeApp {
 
   _bindKeyboard() {
     document.addEventListener("keydown", (e) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const menuKey = {
+          f: "menu-file",
+          v: "menu-view",
+          r: "menu-sensor",
+          i: "menu-image",
+          s: "menu-settings",
+          w: "menu-window",
+          h: "menu-help",
+        }[e.key.toLowerCase()];
+        if (menuKey) {
+          e.preventDefault();
+          document.querySelector(`[data-action="${menuKey}"]`)?.click();
+          return;
+        }
+      }
       if (e.key === " " && this.view === "run") {
         e.preventDefault();
         this._doTrigger();

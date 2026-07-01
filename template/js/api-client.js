@@ -131,6 +131,9 @@ class MockApiClient {
         dir: "mock/download",
       };
     }
+    if (path === "/api/system/restart") {
+      return { ok: true, mock: true };
+    }
     if (path === "/api/stats/reset") {
       const { resetMockStats } = await import("./mock-data.js");
       resetMockStats();
@@ -327,10 +330,43 @@ class MockApiClient {
     const wm = path.match(/^\/api\/wizard\/step\/(\d+)$/);
     if (wm) {
       const key = `${this._activeProfile}:step${wm[1]}`;
-      return this._wizardData[key] || {};
+      const stored = this._wizardData[key] || {};
+      if (wm[1] === "4" && !stored.output) {
+        return {
+          ...stored,
+          io: stored.io || {
+            enabled: false,
+            transport: "rtu",
+            comprehensive_logic: 1,
+            trerr_enabled: true,
+            output_assignments: ["link_ok", "result_ng", "off", "off", "off", "off", "off", "off"],
+            input_assignments: ["trigger", "off", "off", "off", "off", "off", "off", "off"],
+          },
+          output: {
+            save_policy: "none",
+            history: {
+              enabled: false,
+              format: "csv",
+              dir: "output/history/",
+              flush_on_profile_switch: true,
+              flush_on_idle_minutes: 50,
+            },
+          },
+        };
+      }
+      return stored;
     }
     if (path === "/api/io/status") {
       return this._mockIoStatus();
+    }
+    if (path === "/api/device") {
+      return {
+        model: "MarkEye-Cam",
+        name: "MarkEye-01",
+        ip: "127.0.0.1",
+        mac: "00:00:00:00:00:01",
+        app: { version: "1.0" },
+      };
     }
     if (path === "/api/camera/options") {
       return {
@@ -392,7 +428,7 @@ class MockApiClient {
     return { ok: true, mock: true, path, state: getMockState() };
   }
 
-  async trigger() {
+  async trigger(options = {}) {
     if (!this._connected) return null;
     const frame = triggerMockFrame();
     this.onFrame(frame);
@@ -556,8 +592,9 @@ class RealApiClient {
     return res.json();
   }
 
-  async trigger() {
-    return this.post("/api/trigger");
+  async trigger(options = {}) {
+    const body = options.continuous ? { continuous: true } : {};
+    return this.post("/api/trigger", body);
   }
 }
 
@@ -602,8 +639,8 @@ export class ApiClient {
     return this._impl.put?.(path, body);
   }
 
-  trigger() {
-    return this._impl.trigger();
+  trigger(options = {}) {
+    return this._impl.trigger(options);
   }
 
   startLivePreview() {

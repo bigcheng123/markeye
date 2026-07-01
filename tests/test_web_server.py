@@ -340,6 +340,174 @@ def test_config_switch(client, tmp_path):
     assert web_server.state.config_store.get_cached()["trigger"]["source"] == "internal"
 
 
+def test_wizard_step4_get_output_history(client):
+    cfg = web_server.state.config_store.get_cached()
+    cfg.setdefault("output", {})["history"] = {
+        "enabled": True,
+        "format": "csv",
+        "dir": "output/history/",
+        "flush_on_profile_switch": True,
+        "flush_on_idle_minutes": 50,
+    }
+    cfg["output"]["save_policy"] = "ok"
+    web_server.state.config_store.save(cfg)
+
+    res = client.get("/api/wizard/step/4")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["output"]["save_policy"] == "ok"
+    assert data["output"]["history"]["enabled"] is True
+
+
+def test_history_buffered_and_flushed_on_profile_switch(client, tmp_path):
+    import csv
+
+    cv2 = pytest.importorskip("cv2")
+    frame = np.zeros((120, 120, 3), dtype=np.uint8)
+    frame[30:90, 30:90] = (0, 255, 0)
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "config.yaml").write_text("trigger:\n  source: external\n", encoding="utf-8")
+    (config_dir / "other.yaml").write_text("trigger:\n  source: internal\n", encoding="utf-8")
+    web_server.state.config_store.config_dir = config_dir
+    web_server.state.config_store._active = "config.yaml"
+    web_server.state.config_store._cache = None
+
+    img = tmp_path / "master.jpg"
+    cv2.imwrite(str(img), frame)
+    cfg = web_server.state.config_store.get_cached()
+    cfg.setdefault("calibration", {})["masters"] = {"0": str(img)}
+    cfg["tools"] = [
+        {
+            "id": "01",
+            "cam": 0,
+            "type": "hsv_roi",
+            "enabled": True,
+            "roi": {"shape": "rect", "x": 20, "y": 20, "w": 80, "h": 80},
+            "params": {
+                "h_lower": [35, 50, 50],
+                "h_upper": [85, 255, 255],
+                "match_area_min": 100,
+                "match_area_max": 10000,
+            },
+        },
+    ]
+    cfg.setdefault("output", {})["history"] = {
+        "enabled": True,
+        "dir": "output/history/",
+        "flush_on_profile_switch": True,
+        "flush_on_idle_minutes": 0,
+    }
+    web_server.state.config_store.save(cfg)
+    web_server.state.reload_services()
+
+    payload = web_server.state.run_detection({0: frame})
+    assert payload.get("overall", {}).get("passed") is not None
+    assert web_server.state.history.pending_count() == 1
+
+    switch = client.post("/api/config/switch", json={"name": "other.yaml"})
+    assert switch.status_code == 200
+    assert web_server.state.history.pending_count() == 0
+
+    hist_dir = tmp_path / "output" / "history"
+    files = list(hist_dir.glob("inspection_*.csv"))
+    assert len(files) == 1
+    with files[0].open("r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["profile"] == "config.yaml"
+
+
+def test_continuous_trigger_skips_archive(client, tmp_path, monkeypatch):
+    cv2 = pytest.importorskip("cv2")
+    frame = np.zeros((120, 120, 3), dtype=np.uint8)
+    frame[30:90, 30:90] = (0, 255, 0)
+    img = tmp_path / "master.jpg"
+    cv2.imwrite(str(img), frame)
+
+    cfg = web_server.state.config_store.get_cached()
+    cfg.setdefault("calibration", {})["masters"] = {"0": str(img)}
+    cfg["tools"] = [
+        {
+            "id": "01",
+            "cam": 0,
+            "type": "hsv_roi",
+            "enabled": True,
+            "roi": {"shape": "rect", "x": 20, "y": 20, "w": 80, "h": 80},
+            "params": {
+                "h_lower": [35, 50, 50],
+                "h_upper": [85, 255, 255],
+                "match_area_min": 100,
+                "match_area_max": 10000,
+            },
+        },
+    ]
+    cfg.setdefault("output", {})["save_policy"] = "all"
+    cfg["output"]["history"] = {
+        "enabled": True,
+        "dir": "output/history/",
+        "flush_on_profile_switch": False,
+        "flush_on_idle_minutes": 0,
+    }
+    web_server.state.config_store.save(cfg)
+    web_server.state.reload_services()
+
+    saved_images: list = []
+    monkeypatch.setattr(
+        web_server,
+        "maybe_save_result",
+        lambda cfg, passed, image: saved_images.append(passed) or "saved",
+    )
+
+    web_server.state.run_detection({0: frame}, skip_archive=True)
+    assert web_server.state.history.pending_count() == 0
+    assert saved_images == []
+
+    web_server.state.run_detection({0: frame}, skip_archive=False)
+    assert web_server.state.history.pending_count() == 1
+    assert saved_images == [True]
+
+
+def test_trigger_continuous_body_skips_history(client, tmp_path, monkeypatch):
+    cv2 = pytest.importorskip("cv2")
+    frame = np.zeros((120, 120, 3), dtype=np.uint8)
+    frame[30:90, 30:90] = (0, 255, 0)
+    img = tmp_path / "master.jpg"
+    cv2.imwrite(str(img), frame)
+
+    cfg = web_server.state.config_store.get_cached()
+    cfg.setdefault("calibration", {})["masters"] = {"0": str(img)}
+    cfg["tools"] = [
+        {
+            "id": "01",
+            "cam": 0,
+            "type": "hsv_roi",
+            "enabled": True,
+            "roi": {"shape": "rect", "x": 20, "y": 20, "w": 80, "h": 80},
+            "params": {
+                "h_lower": [35, 50, 50],
+                "h_upper": [85, 255, 255],
+                "match_area_min": 100,
+                "match_area_max": 10000,
+            },
+        },
+    ]
+    cfg.setdefault("output", {})["history"] = {"enabled": True, "dir": "output/history/"}
+    web_server.state.config_store.save(cfg)
+    web_server.state.reload_services()
+
+    monkeypatch.setattr(web_server.state.camera, "capture_all_for_trigger", lambda slots: {0: frame})
+
+    res = client.post("/api/trigger", json={"continuous": True})
+    assert res.status_code == 200
+    assert web_server.state.history.pending_count() == 0
+
+    res2 = client.post("/api/trigger")
+    assert res2.status_code == 200
+    assert web_server.state.history.pending_count() == 1
+
+
 def test_config_create(client):
     res = client.post("/api/config/create", json={"name": "prog_001.yaml"})
     assert res.status_code == 200

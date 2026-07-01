@@ -124,6 +124,25 @@ def test_save_wizard_step4_assignments_normalized(store):
     assert len(cfg["io"]["output_assignments"]) == 8
 
 
+def test_save_wizard_step4_output_history(store):
+    store.save({"output": {"save_policy": "none"}})
+    cfg = store.save_wizard_step(
+        4,
+        {
+            "output": {
+                "save_policy": "ng",
+                "history": {
+                    "enabled": True,
+                    "flush_on_idle_minutes": 30,
+                },
+            }
+        },
+    )
+    assert cfg["output"]["save_policy"] == "ng"
+    assert cfg["output"]["history"]["enabled"] is True
+    assert cfg["output"]["history"]["flush_on_idle_minutes"] == 30
+
+
 @pytest.fixture
 def profile_store(tmp_path):
     config_dir = tmp_path / "config"

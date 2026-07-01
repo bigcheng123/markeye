@@ -2,8 +2,7 @@ input:
   cameras:
   - 0
   - 1
-  - 2
-  camera_id: 0
+  camera_id: 1
   fallback_image: ui/ui_sample/target.PNG
   exposure: 50
   gain: 1
@@ -203,7 +202,7 @@ io:
   input_assignments:
   - trigger
   - trigger
-  - switch_program
+  - trigger
   - 'off'
   - 'off'
   - 'off'
@@ -218,12 +217,19 @@ io:
     trigger_bits:
     - 0
     - 1
+    - 2
 output:
   save_result: false
-  save_policy: none
+  save_policy: ng
   save_dir: output/
   show_debug: false
   log_level: INFO
   ng_alert: true
   stats_file: output/stats.json
   jpeg_quality: 70
+  history:
+    enabled: false
+    format: csv
+    dir: output/history/
+    flush_on_profile_switch: true
+    flush_on_idle_minutes: 50

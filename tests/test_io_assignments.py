@@ -34,6 +34,13 @@ def test_normalize_from_legacy_fields():
     assert resolve_trigger_bits(io["input_assignments"]) == [1, 3]
 
 
+def test_normalize_migrates_restart_input_role():
+    io = normalize_io_assignments(
+        {"input_assignments": ["trigger", "restart", "off", "off", "off", "off", "off", "off"]}
+    )
+    assert io["input_assignments"][1] == "off"
+
+
 def test_build_output_states_comprehensive_and_tools():
     assignments = [
         "link_ok",
