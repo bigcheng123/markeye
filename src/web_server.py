@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .calibration import CalibrationService
 from .camera_config import available_camera_ids, camera_id_to_cam_slot, slot_device_ids
@@ -64,15 +64,57 @@ class AppState:
         self.pipeline = DetectionPipeline(cfg)
         self.ws_clients: set[WebSocket] = set()
         self._preview_task: Optional[asyncio.Task] = None
+        self._io_poll_task: Optional[asyncio.Task] = None
         self._preview_paused_until: float = 0.0
         self._last_frame_payload: dict = self.build_idle_payload()
+
+    def _ensure_io_poll_task(self) -> None:
+        if self._io_poll_task and not self._io_poll_task.done():
+            return
+        self._io_poll_task = asyncio.create_task(_io_poll_loop())
+
+    async def _stop_io_poll_task(self) -> None:
+        if not self._io_poll_task:
+            return
+        if self._io_poll_task.done():
+            return
+        self._io_poll_task.cancel()
+        try:
+            await self._io_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    async def apply_io_enabled(self, enabled: bool) -> dict:
+        """启停 Modbus：ON 连接并启动轮询；OFF 断开并停止轮询。"""
+        cfg = self.config_store.get_cached()
+        io_cfg = cfg.setdefault("io", {})
+        io_cfg["enabled"] = bool(enabled)
+        self.config_store.save(cfg)
+        self.reload_services()
+
+        if enabled:
+            ok = await asyncio.to_thread(self.io.connect)
+            self._ensure_io_poll_task()
+        else:
+            await self._stop_io_poll_task()
+            await asyncio.to_thread(self.io.disconnect)
+            ok = True
+
+        payload = self.io.status()
+        payload.update(await asyncio.to_thread(self.io.get_channel_states))
+        payload["ok"] = ok
+        return payload
 
     def build_idle_payload(
         self, frame: Optional[np.ndarray] = None, *, fast_preview: bool = False, slot: Optional[int] = None
     ) -> dict:
         cfg = self.config_store.get_cached()
         if not has_active_tools(cfg):
-            return build_no_tools_frame(cfg, self.stats.snapshot(), idle=True)
+            preview = frame
+            if preview is None:
+                s = 0 if slot is None else int(slot)
+                preview = self.camera.get_live_frame(s)
+            return build_no_tools_frame(cfg, self.stats.snapshot(), preview, idle=True, preview_cam=slot)
         if slot is None:
             slot = (
                 first_enabled_tool_cam(cfg)
@@ -96,6 +138,11 @@ class AppState:
             cfg, self.stats.snapshot(), preview, marks, tool_results, preview_cam=slot
         )
 
+    def _replace_io_service(self, cfg: dict) -> None:
+        """断开旧连接后重建 IO 服务（轮询任务读 state.io 引用）。"""
+        self.io.disconnect()
+        self.io = ModbusIOService(cfg)
+
     def reload_services(self) -> None:
         cfg = self.config_store.get_cached()
         self.calibration.sync_master_dir()
@@ -103,7 +150,7 @@ class AppState:
         new_devices = slot_device_ids(cfg)
         self.camera.config = cfg
         self.pipeline = DetectionPipeline(cfg)
-        self.io = ModbusIOService(cfg)
+        self._replace_io_service(cfg)
         if old_devices != new_devices:
             self.camera.connect_all(new_devices)
 
@@ -122,7 +169,7 @@ class AppState:
             self.config_store.save(cfg)
         self.camera.config = cfg
         self.pipeline = DetectionPipeline(cfg)
-        self.io = ModbusIOService(cfg)
+        self._replace_io_service(cfg)
         return self.camera.connect_all(slot_device_ids(cfg))
 
     def select_camera(self, camera_id: int) -> bool:
@@ -157,7 +204,18 @@ class AppState:
     def run_detection(self, images: np.ndarray | dict[int, np.ndarray]) -> dict:
         cfg = self.config_store.get_cached()
         if not has_active_tools(cfg):
-            return build_no_tools_frame(cfg, self.stats.snapshot(), idle=True)
+            if isinstance(images, dict):
+                # 任取一帧供保存/预览（如无则保持 None）
+                for k in sorted(images.keys()):
+                    if images[k] is not None:
+                        return build_no_tools_frame(
+                            cfg,
+                            self.stats.snapshot(),
+                            images[k],
+                            idle=True,
+                            preview_cam=int(k),
+                        )
+            return build_no_tools_frame(cfg, self.stats.snapshot(), None, idle=True, preview_cam=None)
         primary, preview_cam = pick_primary_preview(images, cfg)
         if primary is None:
             self.stats.record_trerr()
@@ -169,7 +227,7 @@ class AppState:
         frames = images if isinstance(images, dict) else {0: images}
         result = self.pipeline.run(frames)
         self.stats.record_success(result.passed, result.process_ms)
-        self.io.write_result(result.passed)
+        self.io.write_result(result.passed, tool_results=result.tool_results)
         save_img = result.result_image if result.result_image is not None else primary
         maybe_save_result(cfg, result.passed, save_img)
         return build_result_frame(
@@ -180,20 +238,34 @@ class AppState:
 state = AppState()
 
 
+async def _startup_hardware() -> None:
+    """后台连接相机 / Modbus，避免阻塞 WebSocket 握手。"""
+    try:
+        await asyncio.to_thread(state.camera.connect)
+        if state.io.enabled:
+            await asyncio.to_thread(state.io.connect)
+        state._last_frame_payload = json_safe(
+            await asyncio.to_thread(state.build_idle_payload)
+        )
+        await state.broadcast(state._last_frame_payload)
+    except Exception as exc:
+        logger.warning("硬件初始化失败: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    cfg = state.config_store.get_cached()
-    state.camera.connect()
     state._last_frame_payload = json_safe(
         await asyncio.to_thread(state.build_idle_payload)
     )
-    if state.io.enabled:
-        state.io.connect()
+    asyncio.create_task(_startup_hardware())
     state._preview_task = asyncio.create_task(_preview_loop())
+    if state.io.enabled:
+        state._ensure_io_poll_task()
     logger.info("MarkEye Web 服务已启动")
     yield
     if state._preview_task:
         state._preview_task.cancel()
+    await state._stop_io_poll_task()
     state.stats.flush()
     state.camera.disconnect()
     state.io.disconnect()
@@ -245,6 +317,86 @@ async def root():
     return {"service": "MarkEye", "health": "/api/health"}
 
 
+async def _handle_io_switch_program() -> None:
+    """IN 切换程序：auto_switch 启用时按配置切换，否则轮换下一配方。"""
+    cfg = state.config_store.get_cached()
+    auto = cfg.get("io", {}).get("auto_switch", {})
+    profiles = state.config_store.list_profiles()
+    if not profiles:
+        logger.info("IO: 切换程序 — 无可用配方")
+        return
+
+    target_name: Optional[str] = None
+    if auto.get("enabled"):
+        target_name = auto.get("ok_program") or auto.get("ng_program")
+
+    if not target_name:
+        names = [p["name"] for p in profiles]
+        active = state.config_store._active
+        try:
+            idx = names.index(active)
+            target_name = names[(idx + 1) % len(names)]
+        except ValueError:
+            target_name = names[0]
+
+    if target_name and target_name != state.config_store._active:
+        try:
+            state.config_store.switch(target_name)
+            state.reload_services()
+            logger.info("IO: 已切换程序 → %s", target_name)
+        except FileNotFoundError as exc:
+            logger.warning("IO: 切换程序失败: %s", exc)
+
+
+async def _io_poll_loop():
+    """Modbus 输入轮询：分配表上升沿触发检测 / 切换程序等，断线自动重连。"""
+    last_reconnect = 0.0
+    while True:
+        try:
+            io = state.io
+            if not io.enabled:
+                await asyncio.sleep(1.0)
+                continue
+
+            poll_s = max(int(io.cfg.get("poll_interval_ms", 50)), 10) / 1000.0
+            reconnect_s = float(io.cfg.get("reconnect_interval_s", 3))
+
+            if not io.is_connected():
+                now = time.monotonic()
+                if now - last_reconnect >= reconnect_s:
+                    await asyncio.to_thread(io.connect)
+                    last_reconnect = now
+                await asyncio.sleep(poll_s)
+                continue
+
+            if io.busy:
+                await asyncio.sleep(poll_s)
+                continue
+
+            edges = await asyncio.to_thread(io.poll_input_edges)
+            for _index, role in edges:
+                if role == "trigger":
+                    io.busy = True
+                    try:
+                        state._preview_paused_until = time.monotonic() + PREVIEW_PAUSE_AFTER_TRIGGER_SEC
+                        payload = await asyncio.to_thread(_trigger_capture_and_detect)
+                        await state.broadcast(payload)
+                    finally:
+                        io.busy = False
+                    break
+                if role == "switch_program":
+                    await _handle_io_switch_program()
+                elif role == "restart":
+                    logger.info("IO: 收到重启软件请求（需外部署脚本执行）")
+
+            await asyncio.sleep(poll_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("IO 轮询异常: %s", exc)
+            await asyncio.sleep(float(state.io.cfg.get("reconnect_interval_s", 3)))
+
+
 async def _preview_loop():
     """运行模式：推送带定位框的实时预览（idle 帧，约 10fps）。"""
     while True:
@@ -278,8 +430,63 @@ async def health():
         "cameras": state.camera.slot_status(),
         "available_cameras": cameras,
         "using_fallback": state.camera.using_fallback,
+        "io": state.io.status(),
         "app": get_app_meta(ROOT, base=float(cfg.get("app", {}).get("version_base", 0.0))),
     }
+
+
+@app.get("/api/io/status")
+async def io_status():
+    """Modbus IO 连接与分配状态（供 UI / 联调监控）。"""
+    payload = state.io.status()
+    payload.update(await asyncio.to_thread(state.io.get_channel_states))
+    return payload
+
+
+class IoTestOutputBody(BaseModel):
+    channel: int
+    value: bool
+
+
+class IoSwitchBody(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/io/switch")
+async def io_switch(body: IoSwitchBody):
+    """启停 Modbus：ON 连接并显示成功/失败；OFF 断开并停止轮询。"""
+    return await state.apply_io_enabled(bool(body.enabled))
+
+
+@app.post("/api/io/reconnect")
+async def io_reconnect():
+    """手动重连 Modbus（STEP4 联调）。"""
+    if not state.io.enabled:
+        return {"ok": False, "error": "IO 未启用", **state.io.status()}
+    ok = await asyncio.to_thread(state.io.connect)
+    payload = state.io.status()
+    payload.update(await asyncio.to_thread(state.io.get_channel_states))
+    payload["ok"] = ok
+    if not ok and payload.get("last_error"):
+        payload["error"] = payload.get("last_error")
+    return payload
+
+
+@app.post("/api/io/test/output")
+async def io_test_output(body: IoTestOutputBody):
+    """联调：写单路输出线圈。"""
+    if not state.io.enabled:
+        raise HTTPException(400, "IO 未启用")
+    ch = max(0, min(7, int(body.channel)))
+    ok = await asyncio.to_thread(state.io.test_output, ch, body.value)
+    if not ok:
+        last = state.io.status().get("last_error") or ""
+        detail = f"写 OUT{ch + 1} 失败"
+        if last:
+            detail = f"{detail}（{last}）"
+        raise HTTPException(503, detail)
+    states = await asyncio.to_thread(state.io.get_channel_states)
+    return {"ok": True, "channel": ch, "value": bool(body.value), **states}
 
 
 @app.get("/api/camera/options")
@@ -352,6 +559,80 @@ async def switch_config(body: ProfileSwitchBody):
         return {"ok": True, "active": body.name, "config": cfg}
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+class ProfileCreateBody(BaseModel):
+    name: str
+
+
+class ProfileCopyBody(BaseModel):
+    name: str
+    from_name: str = Field(alias="from")
+
+    model_config = {"populate_by_name": True}
+
+
+class ProfileRenameBody(BaseModel):
+    to: str
+    from_name: str = Field(alias="from")
+
+    model_config = {"populate_by_name": True}
+
+
+class ProfileDeleteBody(BaseModel):
+    name: str
+
+
+@app.post("/api/config/create")
+async def create_config(body: ProfileCreateBody):
+    try:
+        cfg = state.config_store.create_from_default(body.name, ROOT)
+        return {"ok": True, "name": body.name, "config": cfg}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/config/copy")
+async def copy_config(body: ProfileCopyBody):
+    try:
+        cfg = state.config_store.copy_profile(body.from_name, body.name, ROOT)
+        return {"ok": True, "from": body.from_name, "name": body.name, "config": cfg}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/config/rename")
+async def rename_config(body: ProfileRenameBody):
+    try:
+        cfg = state.config_store.rename_profile(body.from_name, body.to, ROOT)
+        if state.config_store._active == body.to:
+            state.reload_services()
+        return {"ok": True, "from": body.from_name, "to": body.to, "active": state.config_store._active, "config": cfg}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/config/delete")
+async def delete_config(body: ProfileDeleteBody):
+    try:
+        state.config_store.delete_profile(body.name, ROOT)
+        return {"ok": True, "name": body.name, "active": state.config_store._active}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.get("/api/wizard/step/{step}")

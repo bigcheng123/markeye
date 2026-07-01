@@ -41,6 +41,12 @@ class MockApiClient {
     this._wizardData = {};
     this._mockCameras = [0, 1, 2];
     this._mockCameraId = 0;
+    this._mockIo = {
+      enabled: false,
+      connected: false,
+      inputs: Array(8).fill(false),
+      outputs: Array(8).fill(false),
+    };
   }
 
   _profileList() {
@@ -84,6 +90,22 @@ class MockApiClient {
     if (this._connected === connected) return;
     this._connected = connected;
     this.onConnectionChange(connected);
+  }
+
+  _mockIoStatus() {
+    return {
+      enabled: this._mockIo.enabled,
+      connected: this._mockIo.connected,
+      transport: "rtu",
+      unit_id: 1,
+      busy: false,
+      input_bits: [...this._mockIo.inputs],
+      output_bits: [...this._mockIo.outputs],
+      output_assignments: [],
+      input_assignments: [],
+      outputs: { link_ok: 0, result_ng: 1 },
+      inputs: { trigger_bits: [0] },
+    };
   }
 
   async post(path, body = {}) {
@@ -145,6 +167,46 @@ class MockApiClient {
       await window.__markeyeApp?.loadMasterThumbnails?.();
       return { ok: true, active: this._activeProfile };
     }
+    if (path === "/api/config/create") {
+      const name = body?.name;
+      if (!name) throw new Error("missing name");
+      if (this._profiles.some((p) => p.name === name)) throw new Error("409 exists");
+      const id = name.replace(/\.yaml$/i, "");
+      this._profiles.push({ id, name, active: false });
+      return { ok: true, name };
+    }
+    if (path === "/api/config/copy") {
+      const from = body?.from;
+      const name = body?.name;
+      if (!from || !name) throw new Error("missing fields");
+      if (!this._profiles.some((p) => p.name === from)) throw new Error("404");
+      if (this._profiles.some((p) => p.name === name)) throw new Error("409");
+      const id = name.replace(/\.yaml$/i, "");
+      this._profiles.push({ id, name, active: false });
+      return { ok: true, from, name };
+    }
+    if (path === "/api/config/rename") {
+      const from = body?.from;
+      const to = body?.to;
+      if (!from || !to) throw new Error("missing fields");
+      const item = this._profiles.find((p) => p.name === from);
+      if (!item) throw new Error("404");
+      if (this._profiles.some((p) => p.name === to)) throw new Error("409");
+      item.name = to;
+      item.id = to.replace(/\.yaml$/i, "");
+      if (this._activeProfile === from) this._activeProfile = to;
+      return { ok: true, from, to, active: this._activeProfile };
+    }
+    if (path === "/api/config/delete") {
+      const name = body?.name;
+      if (!name) throw new Error("missing name");
+      if (name === this._activeProfile) throw new Error("409 active");
+      if (this._profiles.length <= 1) throw new Error("409 last");
+      const idx = this._profiles.findIndex((p) => p.name === name);
+      if (idx < 0) throw new Error("404");
+      this._profiles.splice(idx, 1);
+      return { ok: true, name, active: this._activeProfile };
+    }
     if (path === "/api/tools/hsv-area") {
       const viewer = window.__markeyeApp?.imageViewer;
       if (!viewer?._hasFrame) throw new Error("no frame");
@@ -186,6 +248,20 @@ class MockApiClient {
     if (path === "/api/camera/switch") {
       return { ok: true, camera_id: 1, cam: 2, mock: true };
     }
+    if (path === "/api/io/reconnect") {
+      this._mockIo.connected = !!this._mockIo.enabled;
+      return { ok: this._mockIo.connected, connected: this._mockIo.connected, ...this._mockIoStatus() };
+    }
+    if (path === "/api/io/switch") {
+      this._mockIo.enabled = body?.enabled === true;
+      this._mockIo.connected = this._mockIo.enabled;
+      return { ok: true, connected: this._mockIo.connected, ...this._mockIoStatus() };
+    }
+    if (path === "/api/io/test/output") {
+      const ch = Math.max(0, Math.min(7, parseInt(body?.channel, 10) || 0));
+      this._mockIo.outputs[ch] = !!body?.value;
+      return { ok: true, channel: ch, value: !!body?.value, ...this._mockIoStatus() };
+    }
     if (path === "/api/camera/select") {
       let cameraId = body?.camera_id;
       if (cameraId == null && body?.cam != null) {
@@ -220,6 +296,10 @@ class MockApiClient {
       const step = m[1];
       const key = `${this._activeProfile}:step${step}`;
       this._wizardData[key] = { ...(this._wizardData[key] || {}), ...body };
+      if (step === "4" && body?.io) {
+        this._mockIo.enabled = body.io.enabled === true;
+        this._mockIo.connected = this._mockIo.enabled;
+      }
       if (step === "1" && body?.input?.cameras) {
         const cameras = body.input.cameras.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n) && n >= 0);
         if (cameras.length) {
@@ -248,6 +328,9 @@ class MockApiClient {
     if (wm) {
       const key = `${this._activeProfile}:step${wm[1]}`;
       return this._wizardData[key] || {};
+    }
+    if (path === "/api/io/status") {
+      return this._mockIoStatus();
     }
     if (path === "/api/camera/options") {
       return {
@@ -407,7 +490,21 @@ class RealApiClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`${path} ${res.status}`);
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
+          detail = data?.detail || data?.error || text;
+        } catch {
+          detail = text;
+        }
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`${path} ${res.status}${detail ? `: ${detail}` : ""}`);
+    }
     const data = await res.json();
     // /api/trigger 已通过 WebSocket broadcast；避免 HTTP+WS 双通道重复 onFrame
     const skipFrame = path === "/api/trigger" && this._wsConnected();
@@ -417,7 +514,21 @@ class RealApiClient {
 
   async get(path) {
     const res = await fetch(this._base + path);
-    if (!res.ok) throw new Error(`${path} ${res.status}`);
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
+          detail = data?.detail || data?.error || text;
+        } catch {
+          detail = text;
+        }
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`${path} ${res.status}${detail ? `: ${detail}` : ""}`);
+    }
     return res.json();
   }
 
@@ -427,7 +538,21 @@ class RealApiClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`${path} ${res.status}`);
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
+          detail = data?.detail || data?.error || text;
+        } catch {
+          detail = text;
+        }
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`${path} ${res.status}${detail ? `: ${detail}` : ""}`);
+    }
     return res.json();
   }
 

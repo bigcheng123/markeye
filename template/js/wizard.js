@@ -33,6 +33,84 @@ const DEFAULT_CONTOUR_PARAMS = () => ({
   expected: { center: [350, 190], size: [120, 80] },
 });
 
+function _renderIoChannelBtn(kind, index, active) {
+  const on = active ? " is-on" : "";
+  const label = kind === "in" ? `X${index + 1}` : `Y${index + 1}`;
+  const title = kind === "in" ? `${label} 输入状态` : `${label} 点击切换输出`;
+  return `<button type="button" class="wizard-io-ch-btn${on}" data-io-ch="${kind}" data-ch="${index}" title="${title}">${index + 1}</button>`;
+}
+
+function _ioLinkBadgeClass(enabled, connected) {
+  if (!enabled) return "is-disabled";
+  return connected ? "is-ok" : "is-err";
+}
+
+function _ioLinkBadgeLabel(enabled, connected) {
+  if (!enabled) return "已关闭";
+  return connected ? "连接成功" : "连接失败";
+}
+
+const IO_CHANNEL_COUNT = 8;
+
+const IO_OUT_STATIC_OPTIONS = [
+  { value: "off", label: "OFF" },
+  { value: "link_ok", label: "通信成功" },
+  { value: "result_ok", label: "综合判断OK" },
+  { value: "result_ng", label: "综合判断NG" },
+];
+
+const IO_IN_OPTIONS = [
+  { value: "off", label: "OFF" },
+  { value: "trigger", label: "触发" },
+  { value: "switch_program", label: "切换程序" },
+  { value: "restart", label: "重启软件" },
+];
+
+const DEFAULT_OUTPUT_ASSIGNMENTS = [
+  "link_ok",
+  "result_ng",
+  "tool:02",
+  "tool:01",
+  "off",
+  "off",
+  "off",
+  "off",
+];
+
+const DEFAULT_INPUT_ASSIGNMENTS = [
+  "trigger",
+  "switch_program",
+  "restart",
+  "off",
+  "off",
+  "off",
+  "off",
+  "off",
+];
+
+function _ioOutOptions(tools) {
+  const toolOpts = (tools || []).map((t) => ({
+    value: `tool:${t.id}`,
+    label: `工具${t.id}: ${t.name || _toolNameFromKind(_toolKindFromSel(t))}`,
+  }));
+  return [...IO_OUT_STATIC_OPTIONS, ...toolOpts];
+}
+
+function _renderIoSelect(field, options, current, label) {
+  const known = new Set(options.map((o) => o.value));
+  const extra =
+    current && current !== "off" && !known.has(current)
+      ? `<option value="${current}" selected>${current}</option>`
+      : "";
+  const optsHtml = options
+    .map(
+      (o) =>
+        `<option value="${o.value}"${o.value === current ? " selected" : ""}>${o.label}</option>`,
+    )
+    .join("");
+  return `<div class="wizard-form-row"><label>${label}</label><select data-field="${field}">${optsHtml}${extra}</select></div>`;
+}
+
 function _toolKindFromSel(sel) {
   if (sel?.type === "contour_roi" || sel?.type === "hsv_roi") return sel.type;
   const byName = TOOL_KIND_OPTIONS.find((o) => o.name === sel?.name);
@@ -356,6 +434,13 @@ export class Wizard {
     this._step4Loaded = false;
     this._comprehensiveLogic = 1;
     this._trerrEnabled = true;
+    this._ioConfig = {};
+    this._outputAssignments = [...DEFAULT_OUTPUT_ASSIGNMENTS];
+    this._inputAssignments = [...DEFAULT_INPUT_ASSIGNMENTS];
+    this._ioLiveInputs = Array(IO_CHANNEL_COUNT).fill(false);
+    this._ioLiveOutputs = Array(IO_CHANNEL_COUNT).fill(false);
+    this._ioConnected = false;
+    this._ioPollTimer = null;
 
     this._bindNav();
     this._render();
@@ -363,25 +448,53 @@ export class Wizard {
 
   _bindNav() {
     this.stepNav?.querySelectorAll(".wizard-step").forEach((btn) => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", () => {
         const s = parseInt(btn.dataset.step, 10);
         if (!Number.isFinite(s) || s < 1 || s > 4 || s === this.step) return;
-        await this._saveCurrentStep();
-        this.goToStep(s);
+        this._navigateToStep(s);
       });
     });
 
     this.btnBack?.addEventListener("click", () => {
-      if (this.step > 1) this.goToStep(this.step - 1);
+      if (this.step > 1) this._navigateToStep(this.step - 1);
     });
 
     this.btnNext?.addEventListener("click", async () => {
-      await this._saveCurrentStep();
-      if (this.step < 4) this.goToStep(this.step + 1);
-      else this.onComplete?.();
+      if (this.step < 4) {
+        this._navigateToStep(this.step + 1);
+        return;
+      }
+      const ok = await this._saveCurrentStep({ silent: false });
+      if (ok) this.onComplete?.();
     });
 
     this.btnExit?.addEventListener("click", () => this.onExit?.());
+  }
+
+  /** 先切换界面，再在后台保存离开步骤的参数（避免阻塞 UI） */
+  _navigateToStep(step) {
+    if (!Number.isFinite(step) || step < 1 || step > 4 || step === this.step) return;
+    if (this.step === 4) this._readStep4FromForm();
+    const fromStep = this.step;
+    const fragment = this._collectStepFragment();
+    this.goToStep(step);
+    this._persistStepFragment(fromStep, fragment);
+  }
+
+  _hasPersistableFragment(step, fragment) {
+    if (!fragment || typeof fragment !== "object") return false;
+    if (step === 2) return false;
+    return Object.keys(fragment).length > 0;
+  }
+
+  _persistStepFragment(step, fragment) {
+    if (!this._hasPersistableFragment(step, fragment)) return;
+    if (isMockMode()) return;
+    const api = window.__markeyeApp?.api;
+    if (!api?.put) return;
+    api.put(`/api/wizard/step/${step}`, fragment).catch(() => {
+      showToast(`STEP${step} 参数保存失败`, "err");
+    });
   }
 
   goToStep(step) {
@@ -392,6 +505,7 @@ export class Wizard {
       this._clearHsvMatchPreview();
     }
     if (step !== 3) this._hsvPickActive = false;
+    if (step !== 4) this._stopIoPoll();
     this.step = step;
     if (step < 4) this.tab = "output";
     this._render();
@@ -407,6 +521,7 @@ export class Wizard {
   }
 
   hide() {
+    this._stopIoPoll();
     if (this.rightCol) this.rightCol.hidden = true;
     this.stepNav.hidden = true;
     this.footer.hidden = true;
@@ -452,10 +567,11 @@ export class Wizard {
     if (this.step === 2) this._hydrateStep2();
     if (this.step === 3) this._hydrateStep3();
     if (this.step === 4) this._hydrateStep4();
+    this._syncIoPoll();
   }
 
   async _hydrateStep2() {
-    await window.__markeyeApp?.loadMasterThumbnails?.();
+    // 缩略图与预览由 app._onWizardStepChange 统一加载，避免重复请求
   }
 
   async _hydrateStep1() {
@@ -630,6 +746,36 @@ export class Wizard {
     const trerrOn = this._trerrEnabled !== false;
     const logicBtnClass = (n) =>
       `btn btn-secondary${logic === n ? " is-active" : ""}`;
+    const io = this._ioConfig || {};
+    const transport = io.transport || "rtu";
+    const ioEnabled = io.enabled === true;
+    const outOpts = _ioOutOptions(this._tools);
+    const outRows = Array.from({ length: IO_CHANNEL_COUNT }, (_, i) =>
+      _renderIoSelect(
+        `out-assign-${i}`,
+        outOpts,
+        this._outputAssignments[i] || "off",
+        `OUT${i + 1}`,
+      ),
+    ).join("");
+    const inRows = Array.from({ length: IO_CHANNEL_COUNT }, (_, i) =>
+      _renderIoSelect(
+        `in-assign-${i}`,
+        IO_IN_OPTIONS,
+        this._inputAssignments[i] || "off",
+        `IN${i + 1}`,
+      ),
+    ).join("");
+    const tcpFieldsHidden = transport === "rtu" ? " hidden" : "";
+    const rtuFieldsHidden = transport === "tcp" ? " hidden" : "";
+    const linkBadgeClass = _ioLinkBadgeClass(ioEnabled, this._ioConnected);
+    const linkBadgeLabel = _ioLinkBadgeLabel(ioEnabled, this._ioConnected);
+    const inBtns = Array.from({ length: IO_CHANNEL_COUNT }, (_, i) =>
+      _renderIoChannelBtn("in", i, this._ioLiveInputs[i]),
+    ).join("");
+    const outBtns = Array.from({ length: IO_CHANNEL_COUNT }, (_, i) =>
+      _renderIoChannelBtn("out", i, this._ioLiveOutputs[i]),
+    ).join("");
     return `
       <div class="wizard-panel__title">
         <h3>${meta.title}</h3>
@@ -639,16 +785,14 @@ export class Wizard {
         <button type="button" class="wizard-tab ${this.tab === "output" ? "is-active" : ""}" data-tab="output">输出分配</button>
         <button type="button" class="wizard-tab ${this.tab === "logic" ? "is-active" : ""}" data-tab="logic">综合判断</button>
         <button type="button" class="wizard-tab ${this.tab === "autoswitch" ? "is-active" : ""}" data-tab="autoswitch">自动切换程序</button>
-        <button type="button" class="wizard-tab ${this.tab === "ext1" ? "is-active" : ""}" data-tab="ext1">扩展功能 1</button>
+        <button type="button" class="wizard-tab ${this.tab === "modbus" ? "is-active" : ""}" data-tab="modbus">Modbus</button>
         <button type="button" class="wizard-tab ${this.tab === "ext2" ? "is-active" : ""}" data-tab="ext2">扩展功能 2</button>
       </div>
       <div class="wizard-tab-panel ${this.tab === "output" ? "is-active" : ""}" data-panel="output">
-        <div class="wizard-form-row"><label>OUT1</label><select><option>综合判断NG</option><option>综合判断OK</option></select></div>
-        <div class="wizard-form-row"><label>OUT2</label><select><option>工具01: 轮廓</option></select></div>
-        <div class="wizard-form-row"><label>OUT3</label><select><option>工具02: 彩色识别</option></select></div>
-        <div class="wizard-form-row"><label>I/O1</label><select><option>OFF</option></select></div>
-        <div class="wizard-form-row"><label>I/O2</label><select><option>OFF</option></select></div>
-        <div class="wizard-form-row"><label>I/O3</label><select><option>OFF</option></select></div>
+        <div class="wizard-io-grid">
+          <div class="wizard-io-grid__col">${outRows}</div>
+          <div class="wizard-io-grid__col">${inRows}</div>
+        </div>
         <div class="wizard-form-row"><label>触发错误</label>
           <div class="toggle-group" data-toggle="trerr">
             <button type="button" class="${trerrOn ? "is-active" : ""}" data-val="on">有效</button>
@@ -685,7 +829,74 @@ export class Wizard {
         <div class="wizard-form-row"><label>判断NG的时机</label><select><option>每次触发</option></select></div>
         <div class="wizard-form-row"><label>重试次数</label><input type="number" value="5" min="0" max="999" disabled /></div>
       </div>
-      <div class="wizard-tab-panel ${this.tab === "ext1" ? "is-active" : ""}" data-panel="ext1"><p>扩展功能 1（Phase 2）</p></div>
+      <div class="wizard-tab-panel ${this.tab === "modbus" ? "is-active" : ""}" data-panel="modbus">
+        <div class="wizard-modbus-layout">
+          <div class="wizard-modbus-config">
+            <div class="wizard-form-row wizard-modbus-enable-row">
+              <label>IO 启用</label>
+              <div class="toggle-group" data-toggle="io-enabled">
+                <button type="button" class="${ioEnabled ? "is-active" : ""}" data-val="on">开ON</button>
+                <button type="button" class="${!ioEnabled ? "is-active" : ""}" data-val="off">关OFF</button>
+              </div>
+              <button type="button" class="wizard-io-link-badge ${linkBadgeClass}" data-action="io-reconnect" title="点击重新连接">${linkBadgeLabel}</button>
+            </div>
+            <div class="wizard-form-row"><label>传输方式</label>
+              <select data-field="io-transport">
+                <option value="rtu" ${transport === "rtu" ? "selected" : ""}>RTU 串口</option>
+                <option value="tcp" ${transport === "tcp" ? "selected" : ""}>TCP</option>
+              </select>
+            </div>
+            <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>串口</label>
+              <input type="text" data-field="io-serial-port" value="${io.serial_port || "COM4"}" />
+            </div>
+            <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>波特率</label>
+              <input type="number" data-field="io-baudrate" value="${io.baudrate ?? 9600}" min="300" max="115200" />
+            </div>
+            <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>数据位</label>
+              <input type="number" data-field="io-bytesize" value="${io.bytesize ?? 8}" min="5" max="8" />
+            </div>
+            <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>校验位</label>
+              <select data-field="io-parity">
+                <option value="N" ${(io.parity || "N") === "N" ? "selected" : ""}>N</option>
+                <option value="E" ${io.parity === "E" ? "selected" : ""}>E</option>
+                <option value="O" ${io.parity === "O" ? "selected" : ""}>O</option>
+              </select>
+            </div>
+            <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>停止位</label>
+              <input type="number" data-field="io-stopbits" value="${io.stopbits ?? 1}" min="1" max="2" />
+            </div>
+            <div class="wizard-form-row wizard-io-tcp-field${tcpFieldsHidden}"><label>TCP 主机</label>
+              <input type="text" data-field="io-host" value="${io.host || "127.0.0.1"}" />
+            </div>
+            <div class="wizard-form-row wizard-io-tcp-field${tcpFieldsHidden}"><label>TCP 端口</label>
+              <input type="number" data-field="io-port" value="${io.port ?? 502}" min="1" max="65535" />
+            </div>
+            <div class="wizard-form-row"><label>从站地址</label>
+              <input type="number" data-field="io-unit-id" value="${io.unit_id ?? 1}" min="1" max="247" />
+            </div>
+            <div class="wizard-form-row"><label>轮询间隔 (ms)</label>
+              <input type="number" data-field="io-poll-interval" value="${io.poll_interval_ms ?? 50}" min="10" max="5000" />
+            </div>
+            <div class="wizard-form-row"><label>输出保持 (ms)</label>
+              <input type="number" data-field="io-output-pulse-ms" value="${io.output_pulse_ms ?? 0}" min="0" max="10000" />
+            </div>
+            <div class="wizard-form-row"><label>重连间隔 (s)</label>
+              <input type="number" data-field="io-reconnect-interval" value="${io.reconnect_interval_s ?? 3}" min="1" max="60" />
+            </div>
+          </div>
+          <div class="wizard-modbus-io-panel">
+            <div class="wizard-modbus-io-head">
+              <span>IN</span>
+              <span>OUT</span>
+            </div>
+            <div class="wizard-modbus-io-cols">
+              <div class="wizard-modbus-io-col">${inBtns}</div>
+              <div class="wizard-modbus-io-col">${outBtns}</div>
+            </div>
+            <p class="wizard-modbus-io-hint">IN：实时输入状态；OUT：点击切换线圈测试</p>
+          </div>
+        </div>
+      </div>
       <div class="wizard-tab-panel ${this.tab === "ext2" ? "is-active" : ""}" data-panel="ext2"><p>扩展功能 2（Phase 2）</p></div>
     `;
   }
@@ -708,7 +919,15 @@ export class Wizard {
 
     this.contentEl?.querySelectorAll(".wizard-tab").forEach((tab) => {
       tab.addEventListener("click", () => {
-        this.tab = tab.dataset.tab;
+        const next = tab.dataset.tab;
+        if (!next || next === this.tab) return;
+        if (this.step === 4) {
+          this._readStep4FromForm();
+          this.tab = next;
+          this._switchStep4Tab();
+          return;
+        }
+        this.tab = next;
         this._render();
       });
     });
@@ -753,7 +972,7 @@ export class Wizard {
         const n = parseInt(e.target.value, 10);
         if (Number.isFinite(n)) {
           this._comprehensiveLogic = n;
-          this._render();
+          this._updateComprehensiveLogicUI();
         }
       });
       this.contentEl?.querySelectorAll('[data-action="logic"]').forEach((btn) => {
@@ -761,8 +980,32 @@ export class Wizard {
           const n = parseInt(btn.dataset.n, 10);
           if (Number.isFinite(n)) {
             this._comprehensiveLogic = n;
-            this._render();
+            this._updateComprehensiveLogicUI();
           }
+        });
+      });
+      this.contentEl?.querySelector('[data-field="io-transport"]')?.addEventListener("change", (e) => {
+        this._ioConfig = { ...this._ioConfig, transport: e.target.value };
+        this._updateIoTransportFields(e.target.value);
+      });
+      this.contentEl?.querySelector('[data-action="io-reconnect"]')?.addEventListener("click", () => {
+        this._ioReconnect();
+      });
+      this.contentEl?.querySelectorAll('[data-toggle="io-enabled"] button').forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const enabled = btn.dataset.val === "on";
+          this._ioSwitchEnabled(enabled);
+        });
+      });
+      this.contentEl?.querySelectorAll('[data-io-ch="out"]').forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const ch = parseInt(btn.dataset.ch, 10);
+          if (Number.isFinite(ch)) this._ioTestOutput(ch);
+        });
+      });
+      this.contentEl?.querySelectorAll('[data-io-ch="in"]').forEach((btn) => {
+        btn.addEventListener("click", () => {
+          this._refreshIoStatus();
         });
       });
     }
@@ -1211,20 +1454,202 @@ export class Wizard {
     if (isMockMode()) {
       this._comprehensiveLogic = 1;
       this._trerrEnabled = true;
+      this._ioConnected = true;
       return;
+    }
+    if (!this._tools.length) {
+      try {
+        const t3 = await window.__markeyeApp?.api?.get?.("/api/wizard/step/3");
+        if (Array.isArray(t3?.tools)) this._tools = t3.tools;
+      } catch {
+        /* ignore */
+      }
     }
     if (this._step4Loaded) return;
     try {
       const data = await window.__markeyeApp?.api?.get?.("/api/wizard/step/4");
       const io = data?.io || {};
+      this._ioConfig = io;
+      if (Array.isArray(io.output_assignments) && io.output_assignments.length) {
+        this._outputAssignments = [...io.output_assignments];
+        while (this._outputAssignments.length < IO_CHANNEL_COUNT) {
+          this._outputAssignments.push("off");
+        }
+      }
+      if (Array.isArray(io.input_assignments) && io.input_assignments.length) {
+        this._inputAssignments = [...io.input_assignments];
+        while (this._inputAssignments.length < IO_CHANNEL_COUNT) {
+          this._inputAssignments.push("off");
+        }
+      }
       const logic = parseInt(io.comprehensive_logic, 10);
       this._comprehensiveLogic = Number.isFinite(logic) && logic >= 1 && logic <= 4 ? logic : 1;
       this._trerrEnabled = io.trerr_enabled !== false;
       this._step4Loaded = true;
-      this._render();
+      if (this.step === 4) this._render();
     } catch {
       this._comprehensiveLogic = 1;
       this._trerrEnabled = true;
+    }
+  }
+
+  _switchStep4Tab() {
+    if (!this.contentEl) return;
+    this.contentEl.querySelectorAll(".wizard-tab").forEach((t) => {
+      t.classList.toggle("is-active", t.dataset.tab === this.tab);
+    });
+    this.contentEl.querySelectorAll(".wizard-tab-panel").forEach((p) => {
+      p.classList.toggle("is-active", p.dataset.panel === this.tab);
+    });
+    this._syncIoPoll();
+  }
+
+  _updateComprehensiveLogicUI() {
+    const logic = this._comprehensiveLogic ?? 1;
+    const condSel = this.contentEl?.querySelector('[data-field="comprehensive-condition"]');
+    if (condSel) condSel.value = String(logic <= 2 ? logic : 1);
+    this.contentEl?.querySelectorAll('[data-action="logic"]').forEach((btn) => {
+      const n = parseInt(btn.dataset.n, 10);
+      btn.classList.toggle("is-active", n === logic);
+    });
+  }
+
+  _updateIoTransportFields(transport) {
+    const isTcp = transport === "tcp";
+    this.contentEl?.querySelectorAll(".wizard-io-rtu-field").forEach((el) => {
+      el.classList.toggle("hidden", isTcp);
+    });
+    this.contentEl?.querySelectorAll(".wizard-io-tcp-field").forEach((el) => {
+      el.classList.toggle("hidden", !isTcp);
+    });
+  }
+
+  _readStep4FromForm() {
+    if (this.step !== 4) return;
+    this._collectStepFragment();
+  }
+
+  _syncIoPoll() {
+    if (this.step === 4 && this.tab === "modbus") {
+      this._startIoPoll();
+    } else {
+      this._stopIoPoll();
+    }
+  }
+
+  _startIoPoll() {
+    if (this._ioPollTimer) return;
+    this._refreshIoStatus();
+    this._ioPollTimer = setInterval(() => this._refreshIoStatus(), 400);
+  }
+
+  _stopIoPoll() {
+    if (!this._ioPollTimer) return;
+    clearInterval(this._ioPollTimer);
+    this._ioPollTimer = null;
+  }
+
+  async _refreshIoStatus() {
+    try {
+      const data = await window.__markeyeApp?.api?.get?.("/api/io/status");
+      if (!data) return;
+      if (Array.isArray(data.input_bits)) {
+        this._ioLiveInputs = data.input_bits.map((v) => !!v);
+      }
+      if (Array.isArray(data.output_bits)) {
+        this._ioLiveOutputs = data.output_bits.map((v) => !!v);
+      }
+      this._ioConnected = !!data.connected;
+      this._updateIoChannelUI();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _updateIoChannelUI() {
+    if (this.step !== 4 || this.tab !== "modbus" || !this.contentEl) return;
+    const ioEnabled =
+      this.contentEl.querySelector('[data-toggle="io-enabled"] .is-active')?.dataset?.val === "on";
+    const badge = this.contentEl.querySelector('[data-action="io-reconnect"]');
+    if (badge) {
+      badge.textContent = _ioLinkBadgeLabel(ioEnabled, this._ioConnected);
+      badge.className = `wizard-io-link-badge ${_ioLinkBadgeClass(ioEnabled, this._ioConnected)}`;
+    }
+    this.contentEl.querySelectorAll('[data-io-ch="in"]').forEach((btn) => {
+      const i = parseInt(btn.dataset.ch, 10);
+      if (Number.isFinite(i)) btn.classList.toggle("is-on", !!this._ioLiveInputs[i]);
+    });
+    this.contentEl.querySelectorAll('[data-io-ch="out"]').forEach((btn) => {
+      const i = parseInt(btn.dataset.ch, 10);
+      if (Number.isFinite(i)) btn.classList.toggle("is-on", !!this._ioLiveOutputs[i]);
+    });
+  }
+
+  async _ioReconnect() {
+    const ioEnabled =
+      this.contentEl?.querySelector('[data-toggle="io-enabled"] .is-active')?.dataset?.val === "on";
+    if (!ioEnabled) {
+      showToast("请先启用 IO", "warn");
+      return;
+    }
+    try {
+      await this._saveCurrentStep({ silent: true });
+      const data = await window.__markeyeApp?.api?.post?.("/api/io/reconnect");
+      if (Array.isArray(data?.input_bits)) this._ioLiveInputs = data.input_bits.map((v) => !!v);
+      if (Array.isArray(data?.output_bits)) this._ioLiveOutputs = data.output_bits.map((v) => !!v);
+      this._ioConnected = !!data?.connected;
+      this._updateIoChannelUI();
+      showToast(data?.ok ? "Modbus 已连接" : "Modbus 连接失败", data?.ok ? "ok" : "err");
+    } catch {
+      showToast("重连失败", "err");
+    }
+  }
+
+  async _ioSwitchEnabled(enabled) {
+    if (isMockMode()) {
+      this._ioConfig = { ...this._ioConfig, enabled: !!enabled };
+      this._ioConnected = !!enabled;
+      this._updateIoChannelUI();
+      showToast(enabled ? "Modbus 已开启" : "Modbus 已关闭", "ok");
+      return;
+    }
+    try {
+      // 先保存 STEP4 表单（包括串口参数），再切换启用状态
+      await this._saveCurrentStep({ silent: true });
+      const data = await window.__markeyeApp?.api?.post?.("/api/io/switch", { enabled: !!enabled });
+      this._ioConnected = !!data?.connected;
+      if (Array.isArray(data?.input_bits)) this._ioLiveInputs = data.input_bits.map((v) => !!v);
+      if (Array.isArray(data?.output_bits)) this._ioLiveOutputs = data.output_bits.map((v) => !!v);
+      this._updateIoChannelUI();
+      if (enabled) {
+        showToast(data?.connected ? "Modbus 连接成功" : "Modbus 连接失败", data?.connected ? "ok" : "err");
+      } else {
+        showToast("Modbus 已关闭", "ok");
+      }
+    } catch {
+      showToast("切换 IO 失败", "err");
+      // 回读状态避免 UI 停在错误状态
+      this._refreshIoStatus();
+    }
+  }
+
+  async _ioTestOutput(channel) {
+    const ch = Math.max(0, Math.min(IO_CHANNEL_COUNT - 1, channel));
+    const next = !this._ioLiveOutputs[ch];
+    try {
+      const data = await window.__markeyeApp?.api?.post?.("/api/io/test/output", {
+        channel: ch,
+        value: next,
+      });
+      if (Array.isArray(data?.output_bits)) {
+        this._ioLiveOutputs = data.output_bits.map((v) => !!v);
+      } else {
+        this._ioLiveOutputs[ch] = next;
+      }
+      this._updateIoChannelUI();
+    } catch (err) {
+      const msg = typeof err?.message === "string" ? err.message : "";
+      showToast(msg ? `OUT${ch + 1} 测试失败：${msg}` : `OUT${ch + 1} 测试失败`, "err");
     }
   }
 
@@ -1599,7 +2024,10 @@ export class Wizard {
 
   async _saveCurrentStep({ silent = true } = {}) {
     const fragment = this._collectStepFragment();
-    if (!fragment) return false;
+    if (!this._hasPersistableFragment(this.step, fragment)) {
+      if (!silent) showToast("参数已保存", "ok");
+      return true;
+    }
 
     if (isMockMode()) {
       if (!silent) showToast("参数已保存（Mock）", "ok");
@@ -1650,11 +2078,55 @@ export class Wizard {
       const condLogic = condSel ? parseInt(condSel.value, 10) : NaN;
       const logic = Number.isFinite(condLogic) ? condLogic : (this._comprehensiveLogic ?? 1);
       this._comprehensiveLogic = logic;
+
+      const outputAssignments = Array.from({ length: IO_CHANNEL_COUNT }, (_, i) => {
+        const sel = el?.querySelector(`[data-field="out-assign-${i}"]`);
+        return sel?.value || this._outputAssignments[i] || "off";
+      });
+      const inputAssignments = Array.from({ length: IO_CHANNEL_COUNT }, (_, i) => {
+        const sel = el?.querySelector(`[data-field="in-assign-${i}"]`);
+        return sel?.value || this._inputAssignments[i] || "off";
+      });
+      this._outputAssignments = outputAssignments;
+      this._inputAssignments = inputAssignments;
+
+      const ioEnabled = el?.querySelector('[data-toggle="io-enabled"] .is-active')?.dataset?.val === "on";
+      const transport = el?.querySelector('[data-field="io-transport"]')?.value || "rtu";
+      const serialPort = el?.querySelector('[data-field="io-serial-port"]')?.value?.trim() || "COM4";
+      const baudrate = parseInt(el?.querySelector('[data-field="io-baudrate"]')?.value, 10);
+      const bytesize = parseInt(el?.querySelector('[data-field="io-bytesize"]')?.value, 10);
+      const parity = el?.querySelector('[data-field="io-parity"]')?.value || "N";
+      const stopbits = parseInt(el?.querySelector('[data-field="io-stopbits"]')?.value, 10);
+      const unitId = parseInt(el?.querySelector('[data-field="io-unit-id"]')?.value, 10);
+      const pollInterval = parseInt(el?.querySelector('[data-field="io-poll-interval"]')?.value, 10);
+      const outputPulseMs = parseInt(el?.querySelector('[data-field="io-output-pulse-ms"]')?.value, 10);
+      const reconnectInterval = parseFloat(el?.querySelector('[data-field="io-reconnect-interval"]')?.value);
+      const host = el?.querySelector('[data-field="io-host"]')?.value?.trim() || "127.0.0.1";
+      const port = parseInt(el?.querySelector('[data-field="io-port"]')?.value, 10);
+
+      const io = {
+        enabled: ioEnabled,
+        transport,
+        serial_port: serialPort,
+        unit_id: Number.isFinite(unitId) ? unitId : 1,
+        poll_interval_ms: Number.isFinite(pollInterval) ? pollInterval : 50,
+        reconnect_interval_s: Number.isFinite(reconnectInterval) ? reconnectInterval : 3,
+        output_assignments: outputAssignments,
+        input_assignments: inputAssignments,
+        trerr_enabled: trerrOn,
+        comprehensive_logic: logic,
+        host,
+        port: Number.isFinite(port) ? port : 502,
+      };
+      if (Number.isFinite(outputPulseMs)) io.output_pulse_ms = Math.max(0, outputPulseMs);
+      if (Number.isFinite(baudrate)) io.baudrate = baudrate;
+      if (Number.isFinite(bytesize)) io.bytesize = bytesize;
+      io.parity = parity;
+      if (Number.isFinite(stopbits)) io.stopbits = stopbits;
+
+      this._ioConfig = io;
       return {
-        io: {
-          trerr_enabled: trerrOn,
-          comprehensive_logic: logic,
-        },
+        io,
         output: {
           save_policy: el?.querySelector('[data-field="save-policy"]')?.value || "none",
         },

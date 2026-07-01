@@ -44,7 +44,44 @@ def sample_image(tmp_path):
 def test_health(client):
     res = client.get("/api/health")
     assert res.status_code == 200
-    assert res.json()["status"] == "ok"
+    data = res.json()
+    assert data["status"] == "ok"
+    assert "io" in data
+    assert data["io"]["enabled"] is False
+
+
+def test_io_status_endpoint(client):
+    res = client.get("/api/io/status")
+    assert res.status_code == 200
+    data = res.json()
+    assert "enabled" in data
+    assert "connected" in data
+    assert "transport" in data
+    assert "input_bits" in data
+    assert "output_bits" in data
+    assert len(data["input_bits"]) == 8
+    assert len(data["output_bits"]) == 8
+
+
+def test_io_reconnect_when_disabled(client):
+    res = client.post("/api/io/reconnect")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+
+
+def test_io_test_output_when_disabled(client):
+    res = client.post("/api/io/test/output", json={"channel": 0, "value": True})
+    assert res.status_code == 400
+
+
+def test_reload_services_disconnects_old_io(client):
+    old_io = web_server.state.io
+    called = []
+    old_io.disconnect = lambda: called.append(True)
+    web_server.state.reload_services()
+    assert called == [True]
+    assert web_server.state.io is not old_io
 
 
 def test_trigger(client, sample_image):
@@ -301,6 +338,46 @@ def test_config_switch(client, tmp_path):
     assert data["ok"] is True
     assert data["active"] == "other.yaml"
     assert web_server.state.config_store.get_cached()["trigger"]["source"] == "internal"
+
+
+def test_config_create(client):
+    res = client.post("/api/config/create", json={"name": "prog_001.yaml"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["name"] == "prog_001.yaml"
+    assert (web_server.state.config_store.config_dir / "prog_001.yaml").exists()
+
+
+def test_config_copy(client):
+    res = client.post("/api/config/copy", json={"from": "config.yaml", "name": "prog_copy.yaml"})
+    assert res.status_code == 200
+    assert res.json()["name"] == "prog_copy.yaml"
+    assert (web_server.state.config_store.config_dir / "prog_copy.yaml").exists()
+
+
+def test_config_rename(client):
+    client.post("/api/config/create", json={"name": "prog_rename.yaml"})
+    res = client.post(
+        "/api/config/rename",
+        json={"from": "prog_rename.yaml", "to": "prog_renamed.yaml"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["to"] == "prog_renamed.yaml"
+    assert not (web_server.state.config_store.config_dir / "prog_rename.yaml").exists()
+
+
+def test_config_delete(client):
+    client.post("/api/config/create", json={"name": "prog_delete.yaml"})
+    res = client.post("/api/config/delete", json={"name": "prog_delete.yaml"})
+    assert res.status_code == 200
+    assert not (web_server.state.config_store.config_dir / "prog_delete.yaml").exists()
+
+
+def test_config_delete_active_rejected(client):
+    res = client.post("/api/config/delete", json={"name": "config.yaml"})
+    assert res.status_code == 409
 
 
 def test_cameras_enumerate(client, monkeypatch):

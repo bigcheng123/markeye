@@ -2,7 +2,6 @@ input:
   cameras:
   - 0
   - 1
-  - 2
   camera_id: 0
   fallback_image: ui/ui_sample/target.PNG
   exposure: 50
@@ -20,8 +19,7 @@ preprocess:
   morph_kernel: 3
   morph_iters: 1
 calibration:
-  master_image: //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案
-    · 课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master_cam0.jpg
+  master_image: data/masters/config_copy/master_cam0.jpg
   sample_count: 58
   reference_center:
   - 1250
@@ -29,10 +27,8 @@ calibration:
   reference_area: 142.0
   learn_threshold: 73
   masters:
-    '0': //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案 ·
-      课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master_cam0.jpg
-    '1': //172.18.136.26/胶管事业部/2 胶管生产技术部/705_生产技术科/【01】生技科内资料新目录/110_橡胶管/【11】专案 ·
-      课题 · 定例会/制法革新/2025年11月_仕上自动装配设备/03_视觉检查/markeye/output/masters/master_cam1.jpg
+    '0': data/masters/config_copy/master_cam0.jpg
+    '1': data/masters/config_copy/master_cam1.jpg
 trigger:
   source: external
   exposure_ms: null
@@ -202,8 +198,8 @@ io:
   - 'off'
   input_assignments:
   - trigger
-  - trigger
   - switch_program
+  - restart
   - 'off'
   - 'off'
   - 'off'
@@ -217,7 +213,6 @@ io:
   inputs:
     trigger_bits:
     - 0
-    - 1
 output:
   save_result: false
   save_policy: none

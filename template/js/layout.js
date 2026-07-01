@@ -89,6 +89,61 @@ export function confirmModal(message) {
   });
 }
 
+export function promptModal(title, { defaultValue = "", hint = "", label = "配方文件名" } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.querySelector("#prompt-overlay");
+    const titleEl = overlay?.querySelector("#prompt-title");
+    const hintEl = overlay?.querySelector("#prompt-hint");
+    const labelEl = overlay?.querySelector("label[for='prompt-input']");
+    const input = overlay?.querySelector("#prompt-input");
+    const btnOk = overlay?.querySelector("#prompt-ok");
+    const btnCancel = overlay?.querySelector("#prompt-cancel");
+    if (!overlay || !input) {
+      const v = window.prompt(title, defaultValue);
+      resolve(v === null ? null : v.trim());
+      return;
+    }
+
+    if (titleEl) titleEl.textContent = title;
+    if (hintEl) {
+      hintEl.textContent = hint;
+      hintEl.hidden = !hint;
+    }
+    if (labelEl) labelEl.textContent = label;
+    input.value = defaultValue;
+    overlay.classList.add("is-open");
+    input.focus();
+    input.select();
+
+    const cleanup = (result) => {
+      overlay.classList.remove("is-open");
+      btnOk?.removeEventListener("click", onOk);
+      btnCancel?.removeEventListener("click", onCancel);
+      input.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+
+    const onOk = () => {
+      const v = input.value.trim();
+      cleanup(v || null);
+    };
+    const onCancel = () => cleanup(null);
+    const onKey = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        onOk();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+
+    btnOk?.addEventListener("click", onOk);
+    btnCancel?.addEventListener("click", onCancel);
+    input.addEventListener("keydown", onKey);
+  });
+}
+
 export function infoModal(title, message) {
   return infoModalContent(title, message, { html: false });
 }

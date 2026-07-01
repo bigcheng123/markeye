@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 from typing import Optional
 
 import cv2
@@ -17,13 +18,25 @@ from .utils import imwrite, open_dir_in_file_manager
 NO_TOOLS_VIEWPORT_MESSAGE = "未启用测量工具\n请在「设定 → STEP3」中启用至少一个工具"
 NO_TOOLS_FRAME_SIZE = (640, 480)
 
+_CODEC_LOCK = threading.Lock()
 
-def build_no_tools_frame(config: dict, stats: dict, *, idle: bool = True) -> dict:
-    """无启用工具时：黑屏占位帧，不产生检测判定。"""
+
+def build_no_tools_frame(
+    config: dict,
+    stats: dict,
+    original: Optional[np.ndarray] = None,
+    *,
+    idle: bool = True,
+    preview_cam: Optional[int] = None,
+) -> dict:
+    """无启用工具时：显示提示信息；如有画面则仍返回可保存图像。"""
     cal = config.get("calibration", {})
     trigger = config.get("trigger", {})
     source = trigger.get("source", "internal")
-    w, h = NO_TOOLS_FRAME_SIZE
+    quality = int(config.get("output", {}).get("jpeg_quality", 70))
+    images = _frame_images(original, config, None, quality)
+    w = int(images.get("width") or NO_TOOLS_FRAME_SIZE[0])
+    h = int(images.get("height") or NO_TOOLS_FRAME_SIZE[1])
     return {
         "type": "frame",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -31,15 +44,8 @@ def build_no_tools_frame(config: dict, stats: dict, *, idle: bool = True) -> dic
         "no_tools": True,
         "viewport_message": NO_TOOLS_VIEWPORT_MESSAGE,
         "overall": {"passed": None, "logic": _comprehensive_logic(config)},
-        "preview_cam": None,
-        "frame": {
-            "width": w,
-            "height": h,
-            "process_ms": None,
-            "image_base64": None,
-            "original_base64": None,
-            "binary_base64": None,
-        },
+        "preview_cam": preview_cam,
+        "frame": {"width": w, "height": h, "process_ms": None, **images},
         "marks": [],
         "tool_rois": [],
         "inspections": [],
@@ -50,16 +56,20 @@ def build_no_tools_frame(config: dict, stats: dict, *, idle: bool = True) -> dic
 
 
 def encode_image_b64(img: np.ndarray, quality: int = 70) -> str:
-    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
-    if not ok:
-        return ""
-    return base64.b64encode(buf.tobytes()).decode("ascii")
+    # OpenCV 的 imencode()/imdecode() 在 Windows 上偶发非线程安全崩溃（0xC0000005）。
+    # 这里用全局锁串行化 codec 调用，优先保证产线稳定性。
+    with _CODEC_LOCK:
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if not ok:
+            return ""
+        return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
 def decode_image_b64(b64: str) -> np.ndarray:
     data = base64.b64decode(b64)
     buf = np.frombuffer(data, dtype=np.uint8)
-    img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    with _CODEC_LOCK:
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("无法解码图像数据")
     return img

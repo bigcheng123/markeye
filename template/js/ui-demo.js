@@ -88,7 +88,7 @@ export async function runUiDemo(app) {
   await step("全局 — ProgramBar 按钮", async () => {
     app.clickEl("#btn-details");
     await delay(600);
-    document.querySelector("#info-close")?.click();
+    document.querySelector("#recipe-close")?.click();
     await delay(300);
     app.clickEl("#btn-image-history");
     await delay(300);

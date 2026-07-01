@@ -97,7 +97,7 @@ pytest tests/ --cov=src
 | **STEP1** 拍摄条件 | 曝光时间、触发方式（内部/外部 IO）、相机设备号 | `input.cameras`, `input.exposure`, `trigger.source` |
 | **STEP2** 注册主控 | 拍摄/上传主控图像（CAM#0 / CAM#1 分槽位），按程序存档 | `calibration.masters` |
 | **STEP3** 工具设定 | 配置检测工具：HSV 色彩识别 / 轮廓形状匹配，设定 ROI 与判定阈值 | `tools[]` |
-| **STEP4** 输出分配 | OUT 线圈映射、综合判定逻辑、OK/NG 自动切换程序 | `io.outputs`, `io.comprehensive_logic` |
+| **STEP4** 输出分配 | 8 路 OUT/IN 角色分配、Modbus 连接、综合判定 | `io.output_assignments`, `io.input_assignments`, `io.serial_port` |
 
 ### 自动运行（RUN）
 
@@ -133,14 +133,14 @@ CAM #2 (slot2)  ──→                         ──→  slot1.latest_frame
 
 ## IO 与 STEP4
 
-通过 **Modbus TCP** 与 PLC/IO 模块通信（联调前 Mock 线圈写入）：
+通过 **Modbus RTU（RS232/COM）** 或 **Modbus TCP** 与 IO 继电器模块通信。产线默认 RTU：`COM4`、9600 8N1、Slave ID 1。详见 [plan/modbus_io.md](plan/modbus_io.md)。
 
 | 方向 | 信号 | 说明 |
 |------|------|------|
-| 输入 | 启动 / 触发 | 外部触发拍照与检测 |
-| 输出 | OK / NG | 综合判定结果驱动分拣或报警 |
-| 输出 | 就绪 / 忙 | 系统状态指示 |
-| 输出 | TrERR | 触发错误（采图失败等）不计入 OK/NG |
+| 输入 | X1 / X2 | 上升沿触发拍照与检测（`inputs.trigger_bits`） |
+| 输出 | Y1 `link_ok` | ON=通信连接成功 |
+| 输出 | Y2 `result_ng` | ON=NG，OFF=OK |
+| 输出 | TrERR | 触发错误（采图失败等）不驱动 Y2 |
 
 联调前 IO 以日志模式运行（`io.enabled: false`，写入 `logging.DEBUG`）。
 
@@ -177,7 +177,7 @@ markeye/
 │   │   └── roi_tools.py         # ROI 工具执行（HSV 面积 / 轮廓形状）
 │   └── io/
 │       ├── __init__.py
-│       └── modbus_client.py     # Modbus IO 客户端（联调前占位）
+│       └── modbus_client.py     # Modbus RTU/TCP IO 客户端
 ├── config/
 │   └── config.yaml              # 默认配方（检测参数/工具/IO/输出）
 ├── template/                    # Web UI 前端
@@ -301,7 +301,7 @@ markeye/
 | CPU | Intel J1900, 4 核 2.0 GHz |
 | 内存 | DDR3 2 GB |
 | 硬盘 | SATA 120 GB |
-| IO | Modbus TCP（联调中） |
+| IO | Modbus RTU / TCP（见 plan/modbus_io.md） |
 
 > 2 GB 内存环境建议关闭 `--debug` 窗口。预览帧率目标 ≥ 15fps。
 
@@ -336,7 +336,7 @@ markeye/
 | 双路相机服务 | ✅ | 按平台选择 OpenCV 后端（Win: DSHOW/MSMF，Linux: V4L2） |
 | CLI 单张/批量检测 | ✅ | 无 GUI 依赖 |
 | CLI `--debug` / `--camera` | ⚠️ | 需图形显示（`cv2.imshow`）；产线请用 Web UI |
-| Modbus IO | ✅ | `pymodbus` 可选，未安装时日志模式 |
+| Modbus IO | ✅ | RTU(COM4) + TCP；`pymodbus` 未安装时日志模式 |
 | 启动脚本 | ✅ | 各平台独立脚本，统一调用 `python -m src.web_server` |
 
 ### 开发约定（摘要）

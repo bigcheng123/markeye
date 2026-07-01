@@ -16,6 +16,7 @@ import {
   setAppView,
   updateModeTabIcons,
 } from "./layout.js";
+import { openProfileManager } from "./profile-manager.js";
 import {
   addMockCalibration,
   resetMockStats,
@@ -46,7 +47,8 @@ class MarkEyeApp {
     this._mockCameras = [0, 1, 2];
     this._mockCameraId = 0;
     this._lastCameraList = [0, 1, 2];
-    this._toolPreview = { active: false, tool: null };
+    this._toolPreview = { active: false, tool: null, cam: null };
+    this._toolPreviewSeq = 0;
 
     this.statusBar = new StatusBar();
     this.toolPanel = new ToolPanel();
@@ -190,21 +192,110 @@ class MarkEyeApp {
       }
     }
     this.statusBar.update(data);
-    // 工具预览激活时：保持主画面显示工具对应图像，不被实时帧覆盖
     if (!this._toolPreview?.active) {
       this.imageViewer.updateFrame(data);
       this._syncDisplayCameraNumberFromFrame(data);
     } else {
-      this._syncDisplayCameraNumber(this.imageViewer.getPreviewCamSlot());
+      this._applyToolPreviewFrame(data, isTriggerResult);
     }
     this.toolPanel.update(data);
+  }
+
+  _applyToolPreviewFrame(data, isTriggerResult) {
+    const toolCam = this._toolPreview.cam;
+    const frameCam = data.preview_cam != null ? parseInt(data.preview_cam, 10) : 0;
+    const resolvedToolCam = Number.isFinite(toolCam)
+      ? toolCam
+      : this.imageViewer.getPreviewCamSlot();
+
+    if (isTriggerResult) {
+      if (Number.isFinite(toolCam) && frameCam === toolCam) {
+        this.imageViewer.updateFrame(data);
+        this._syncDisplayCameraNumberFromFrame(data);
+        return;
+      }
+      void this._refreshToolPreviewFrame(this._toolPreview.tool, { triggerData: data, silent: true });
+      return;
+    }
+
+    if (data.idle && !data.no_tools && Number.isFinite(toolCam) && frameCam === toolCam) {
+      this.imageViewer.updateFrame(data);
+      this._syncDisplayCameraNumberFromFrame(data);
+      return;
+    }
+
+    this._syncDisplayCameraNumber(resolvedToolCam);
+  }
+
+  async _refreshToolPreviewFrame(tool, { triggerData = null, silent = false } = {}) {
+    if (!tool || isMockMode()) return;
+    const seq = ++this._toolPreviewSeq;
+    try {
+      const info = await this.api.get(`/api/tools/image?tool=${encodeURIComponent(tool)}`);
+      if (seq !== this._toolPreviewSeq || !this._toolPreview?.active || this._toolPreview.tool !== tool) {
+        return;
+      }
+
+      const slot = info?.cam != null ? parseInt(info.cam, 10) : 0;
+      const camSlot = Number.isFinite(slot) ? Math.max(0, Math.min(1, slot)) : 0;
+      this._toolPreview.cam = camSlot;
+      this.imageViewer?.setPreviewCamSlot?.(camSlot);
+      this._syncDisplayCameraNumber(camSlot);
+
+      const frameCam = triggerData?.preview_cam != null ? parseInt(triggerData.preview_cam, 10) : null;
+      if (
+        triggerData
+        && !triggerData.idle
+        && triggerData.overall?.passed != null
+        && frameCam === camSlot
+      ) {
+        if (seq !== this._toolPreviewSeq) return;
+        this.imageViewer.updateFrame(triggerData);
+        return;
+      }
+
+      const live = await this.api.get(`/api/cameras/live?cam=${camSlot}`);
+      if (seq !== this._toolPreviewSeq || !this._toolPreview?.active || this._toolPreview.tool !== tool) {
+        return;
+      }
+
+      const overlayRoi = info?.roi || null;
+      this.imageViewer.updateFrame({
+        type: "frame",
+        timestamp: new Date().toISOString(),
+        idle: true,
+        overall: triggerData?.overall ?? { passed: null },
+        preview_cam: camSlot,
+        frame: {
+          width: live.width,
+          height: live.height,
+          process_ms: triggerData?.frame?.process_ms ?? null,
+          image_base64: live.image_base64,
+          binary_base64: live.binary_base64 || "",
+        },
+        tool_rois: overlayRoi ? [{ cam: camSlot, roi: overlayRoi }] : [],
+        marks: [],
+        inspections: triggerData?.inspections || [],
+        stats: triggerData?.stats || {},
+        calibration: triggerData?.calibration || {},
+        trigger: triggerData?.trigger || { source: "tool", label: `Tool ${tool}` },
+      });
+      if (!silent) {
+        showToast(`已切换至 Tool ${tool} 的相机画面`, "ok");
+      }
+    } catch {
+      if (seq === this._toolPreviewSeq && !silent) {
+        showToast("工具图像获取失败", "err");
+      }
+    }
   }
 
   _syncDisabledToolPreview(data) {
     const available = new Set((data.inspections || []).map((i) => i.tool));
     if (!this._toolPreview?.active || !this._toolPreview.tool) return;
     if (available.has(this._toolPreview.tool)) return;
-    this._toolPreview = { active: false, tool: null };
+    this._toolPreview = { active: false, tool: null, cam: null };
+    this._toolPreviewSeq += 1;
     if (!isMockMode()) {
       void this.api?.pullCurrentFrame?.();
     }
@@ -214,7 +305,8 @@ class MarkEyeApp {
     this.toolPanel.onToolSelect = async (tool) => {
       if (this.view !== "run") return;
       if (!tool) {
-        this._toolPreview = { active: false, tool: null };
+        this._toolPreview = { active: false, tool: null, cam: null };
+        this._toolPreviewSeq += 1;
         this.imageViewer.clearVerdict?.();
         if (!isMockMode()) {
           await this.api?.pullCurrentFrame?.();
@@ -228,54 +320,15 @@ class MarkEyeApp {
   }
 
   async showToolPreview(tool) {
-    this._toolPreview = { active: true, tool };
+    this._toolPreview = { active: true, tool, cam: null };
     if (isMockMode()) {
-      // Mock 模式下回退为显示当前帧（避免无后端接口）
-      this._toolPreview = { active: false, tool: null };
+      this._toolPreview = { active: false, tool: null, cam: null };
+      this._toolPreviewSeq += 1;
       showToast("Mock 模式暂不支持工具图像预览", "warn");
       return;
     }
-    try {
-      // 运行模式点击工具：主画面切换到该工具所属 CAM# 的整幅画面，同时同步相机号码下拉框
-      // 先取工具配置（cam/roi），再取对应 CAM# 的 live 全幅图像。
-      const info = await this.api.get(`/api/tools/image?tool=${encodeURIComponent(tool)}`);
-      const slot = info?.cam != null ? parseInt(info.cam, 10) : 0;
-      const camSlot = Number.isFinite(slot) ? Math.max(0, Math.min(1, slot)) : 0;
-
-      // 同步主视口叠加层过滤用的 cam slot
-      this.imageViewer?.setPreviewCamSlot?.(camSlot);
-
-      this._syncDisplayCameraNumber(camSlot);
-
-      const live = await this.api.get(`/api/cameras/live?cam=${camSlot}`);
-      const overlayRoi = info?.roi || null;
-
-      this.imageViewer.clearVerdict?.();
-      this.imageViewer.updateFrame({
-        type: "frame",
-        timestamp: new Date().toISOString(),
-        idle: true,
-        overall: { passed: null },
-        preview_cam: camSlot,
-        frame: {
-          width: live.width,
-          height: live.height,
-          process_ms: null,
-          image_base64: live.image_base64,
-          binary_base64: live.binary_base64 || "",
-        },
-        // 在整幅画面上仍显示该工具的 ROI 位置（可选）
-        tool_rois: overlayRoi ? [{ cam: camSlot, roi: overlayRoi }] : [],
-        marks: [],
-        inspections: [],
-        stats: {},
-        calibration: {},
-        trigger: { source: "tool", label: `Tool ${tool}` },
-      });
-      showToast(`已切换至 Tool ${tool} 的相机画面`, "ok");
-    } catch {
-      showToast("工具图像获取失败", "err");
-    }
+    this.imageViewer.clearVerdict?.();
+    await this._refreshToolPreviewFrame(tool);
   }
 
   async _loadProfiles() {
@@ -309,7 +362,8 @@ class MarkEyeApp {
     if (view === "run") {
       this.wizard.hide();
       this._stopWizardPreview();
-      this._toolPreview = { active: false, tool: null };
+      this._toolPreview = { active: false, tool: null, cam: null };
+      this._toolPreviewSeq += 1;
       this.statusBar.setWaiting();
       if (!this.api?._connected) {
         this.api?.start();
@@ -324,7 +378,8 @@ class MarkEyeApp {
     } else if (view === "set") {
       this.wizard.hide();
       this._stopWizardPreview();
-      this._toolPreview = { active: false, tool: null };
+      this._toolPreview = { active: false, tool: null, cam: null };
+      this._toolPreviewSeq += 1;
       showConnectionBanner(false);
       this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
@@ -333,7 +388,8 @@ class MarkEyeApp {
       this.wizard.show();
       this.previewMode = "off";
       this.livePreviewStarted = false;
-      this._toolPreview = { active: false, tool: null };
+      this._toolPreview = { active: false, tool: null, cam: null };
+      this._toolPreviewSeq += 1;
       this.imageViewer.disableRoiEditor?.();
       this.statusBar.setWaiting();
       this.imageViewer.updateFrame(createIdleFrame());
@@ -757,6 +813,26 @@ class MarkEyeApp {
     }
   }
 
+  async _onProfileSwitch(name, { forceReload = false } = {}) {
+    const prev = this._getActiveProfileName();
+    if (name !== prev) {
+      await this._switchProfile(name);
+      return;
+    }
+    if (!forceReload) return;
+    if (this.view === "wizard") {
+      const step = this.wizard.step;
+      this.hasMasterRegistered = false;
+      this.masterFrame = null;
+      this._masterFrames = {};
+      this._masterSlots = { 0: false, 1: false };
+      this._masterDraft = { 0: false, 1: false };
+      this.wizard.reloadForProfile(step);
+      await this.loadMasterThumbnails();
+      await this._onWizardStepChange(step);
+    }
+  }
+
   _bindModeTabs() {
     document.querySelectorAll(".mode-tab").forEach((tab) => {
       tab.addEventListener("click", () => {
@@ -808,8 +884,11 @@ class MarkEyeApp {
     });
 
     document.querySelector("#btn-details")?.addEventListener("click", () => {
-      const sel = document.querySelector("#config-profile");
-      infoModal("程序详细", `当前方案: ${sel?.selectedOptions[0]?.text}\n检测项: 学习 / 彩色识别\n模式: 纯前端 Mock`);
+      openProfileManager({
+        api: this.api,
+        onProfilesChanged: () => this._loadProfiles(),
+        onSwitchProfile: (name, opts) => this._onProfileSwitch(name, opts),
+      });
     });
 
     document.querySelector("#btn-image-history")?.addEventListener("click", () => {

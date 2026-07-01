@@ -104,3 +104,106 @@ def test_save_wizard_step4_comprehensive_logic(store):
     cfg = store.save_wizard_step(4, {"io": {"comprehensive_logic": 2, "trerr_enabled": False}})
     assert cfg["io"]["comprehensive_logic"] == 2
     assert cfg["io"]["trerr_enabled"] is False
+
+
+def test_save_wizard_step4_assignments_normalized(store):
+    store.save({"io": {}})
+    fragment = {
+        "io": {
+            "enabled": True,
+            "transport": "rtu",
+            "serial_port": "COM4",
+            "output_assignments": ["link_ok", "result_ng"] + ["off"] * 6,
+            "input_assignments": ["trigger"] + ["off"] * 7,
+        }
+    }
+    cfg = store.save_wizard_step(4, fragment)
+    assert cfg["io"]["outputs"]["link_ok"] == 0
+    assert cfg["io"]["outputs"]["result_ng"] == 1
+    assert cfg["io"]["inputs"]["trigger_bits"] == [0]
+    assert len(cfg["io"]["output_assignments"]) == 8
+
+
+@pytest.fixture
+def profile_store(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    store = ConfigStore(config_dir=str(config_dir), default_name="config.yaml")
+    master_dir = tmp_path / "data" / "masters" / "config"
+    master_dir.mkdir(parents=True)
+    master_file = master_dir / "master_cam0.jpg"
+    master_file.write_bytes(b"jpeg")
+    rel = "data/masters/config/master_cam0.jpg"
+    store.save(
+        {
+            "trigger": {"source": "external"},
+            "input": {"camera_id": 0},
+            "calibration": {
+                "masters": {"0": rel},
+                "master_image": rel,
+                "sample_count": 1,
+            },
+            "tools": [{"id": "01", "enabled": True, "type": "hsv_roi", "cam": 0}],
+        }
+    )
+    return store, tmp_path
+
+
+def test_create_from_default(profile_store):
+    store, root = profile_store
+    cfg = store.create_from_default("prog_001.yaml", root)
+    assert (store.config_dir / "prog_001.yaml").exists()
+    assert cfg["trigger"]["source"] == "external"
+    masters = cfg["calibration"]["masters"]["0"]
+    assert masters.startswith("data/masters/prog_001/")
+    assert (root / "data" / "masters" / "prog_001" / "master_cam0.jpg").is_file()
+
+
+def test_copy_profile(profile_store):
+    store, root = profile_store
+    cfg = store.copy_profile("config.yaml", "prog_copy.yaml", root)
+    assert (store.config_dir / "prog_copy.yaml").exists()
+    assert cfg["calibration"]["masters"]["0"].startswith("data/masters/prog_copy/")
+    assert (root / "data" / "masters" / "prog_copy" / "master_cam0.jpg").is_file()
+
+
+def test_rename_profile_updates_active(profile_store):
+    store, root = profile_store
+    store.create_from_default("prog_active.yaml", root)
+    store.switch("prog_active.yaml")
+    store.rename_profile("prog_active.yaml", "renamed.yaml", root)
+    assert not (store.config_dir / "prog_active.yaml").exists()
+    assert (store.config_dir / "renamed.yaml").exists()
+    assert store._active == "renamed.yaml"
+    assert (root / "data" / "masters" / "renamed" / "master_cam0.jpg").is_file()
+
+
+def test_rename_profile_rejects_default_name(profile_store):
+    store, root = profile_store
+    store.copy_profile("config.yaml", "other.yaml", root)
+    with pytest.raises(ValueError, match="不能重命名默认配方"):
+        store.rename_profile("config.yaml", "new.yaml", root)
+
+
+def test_delete_profile(profile_store):
+    store, root = profile_store
+    store.create_from_default("prog_del.yaml", root)
+    store.delete_profile("prog_del.yaml", root)
+    assert not (store.config_dir / "prog_del.yaml").exists()
+    assert not (root / "data" / "masters" / "prog_del").exists()
+
+
+def test_delete_profile_rejects_active(profile_store):
+    store, root = profile_store
+    store.create_from_default("prog_x.yaml", root)
+    store.switch("prog_x.yaml")
+    with pytest.raises(ValueError, match="不能删除当前活动配方"):
+        store.delete_profile("prog_x.yaml", root)
+
+
+def test_delete_profile_rejects_default(profile_store):
+    store, root = profile_store
+    store.create_from_default("prog_y.yaml", root)
+    store.switch("prog_y.yaml")
+    with pytest.raises(ValueError, match="不能删除默认配方"):
+        store.delete_profile("config.yaml", root)

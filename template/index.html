@@ -56,7 +56,7 @@
             <option value="config.yaml" selected>P001: config.yaml — 默认方案</option>
           </select>
           <div class="program-actions">
-            <button type="button" id="btn-details" class="btn btn-program" data-action="program-details">详细</button>
+            <button type="button" id="btn-details" class="btn btn-program" data-action="program-profiles">配方程序</button>
             <button type="button" id="btn-image-history" class="btn btn-program" data-action="image-history">
               运行/学习<br />图像历史
             </button>
@@ -239,6 +239,50 @@
       <p id="info-message"></p>
       <div class="modal__actions">
         <button type="button" id="info-close" class="btn btn-primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 配方管理弹窗 -->
+  <div id="recipe-overlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="recipe-title">
+    <div class="modal modal--recipe">
+      <div id="recipe-title" class="modal__title">配方管理</div>
+      <div class="recipe-toolbar">
+        <button type="button" id="recipe-add" class="btn btn-secondary">添加</button>
+        <button type="button" id="recipe-copy" class="btn btn-secondary">复制</button>
+        <button type="button" id="recipe-rename" class="btn btn-secondary">重命名</button>
+        <button type="button" id="recipe-delete" class="btn btn-secondary">删除</button>
+      </div>
+      <div class="recipe-table-wrap">
+        <table id="recipe-table" class="recipe-table" aria-label="配方列表">
+          <thead>
+            <tr>
+              <th>编号</th>
+              <th>文件名</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="recipe-table-body"></tbody>
+        </table>
+      </div>
+      <div class="modal__actions">
+        <button type="button" id="recipe-close" class="btn btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 输入弹窗 -->
+  <div id="prompt-overlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+    <div class="modal">
+      <div id="prompt-title" class="modal__title">输入</div>
+      <p id="prompt-hint" class="modal__hint"></p>
+      <div class="modal__field">
+        <label for="prompt-input">配方文件名</label>
+        <input type="text" id="prompt-input" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="modal__actions">
+        <button type="button" id="prompt-cancel" class="btn btn-secondary">取消</button>
+        <button type="button" id="prompt-ok" class="btn btn-primary">确定</button>
       </div>
     </div>
   </div>

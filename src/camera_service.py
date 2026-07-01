@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -20,13 +21,34 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _capture_backends() -> list[int | None]:
     if sys.platform == "win32":
-        return [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
+        # MSMF 在部分 Windows 机器/驱动组合下会出现抓帧失败甚至原生崩溃（0xC0000005）。
+        # 默认优先使用 DSHOW；若确实需要 MSMF，可显式设置环境变量启用。
+        enable_msmf = os.environ.get("MARKEYE_ENABLE_MSMF", "").strip() in {"1", "true", "TRUE", "True"}
+        return [cv2.CAP_DSHOW, cv2.CAP_MSMF, None] if enable_msmf else [cv2.CAP_DSHOW, None]
     return [cv2.CAP_V4L2, None]
 
 
-def _probe_camera(cam_id: int) -> Optional[cv2.VideoCapture]:
+def _read_frame_with_timeout(cap: cv2.VideoCapture, timeout_s: float = 2.0) -> tuple[bool, Optional[np.ndarray]]:
+    """避免 Windows MSMF 在 read() 上长时间阻塞。"""
+    box: list = [False, None]
+
+    def _work() -> None:
+        box[0], box[1] = cap.read()
+
+    thread = threading.Thread(target=_work, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        return False, None
+    return bool(box[0]), box[1]
+
+
+def _probe_camera(cam_id: int, *, timeout_s: float = 2.0) -> Optional[cv2.VideoCapture]:
     """尝试打开设备并读取一帧；成功则返回已打开的 VideoCapture。"""
+    deadline = time.monotonic() + max(timeout_s, 0.5)
     for backend in _capture_backends():
+        if time.monotonic() >= deadline:
+            break
         cap = (
             cv2.VideoCapture(cam_id)
             if backend is None
@@ -36,7 +58,8 @@ def _probe_camera(cam_id: int) -> Optional[cv2.VideoCapture]:
             cap.release()
             continue
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        ret, frame = cap.read()
+        remaining = max(0.2, deadline - time.monotonic())
+        ret, frame = _read_frame_with_timeout(cap, remaining)
         if ret and frame is not None:
             return cap
         cap.release()
