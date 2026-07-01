@@ -32,6 +32,9 @@ pip install -r requirements.txt
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# 启动 Web 服务
+./start_app.sh
 ```
 
 ### 使用方式
@@ -218,6 +221,11 @@ markeye/
 │   └── test_frame_codec.py
 ├── plan/                        # 设计文档
 ├── requirements.txt
+├── start_app.bat              # Windows 启动 Web
+├── start_app.sh               # Linux/macOS 启动 Web
+├── stop_app.bat               # Windows 停止 Web
+├── stop_app.sh                # Linux/macOS 停止 Web
+├── deploy/kiosk.sh            # Ubuntu 产线 kiosk
 ├── CLAUDE.md
 └── README.md
 ```
@@ -301,9 +309,42 @@ markeye/
 
 | | 开发 | 部署 |
 |---|---|---|
-| OS | Windows | Ubuntu 24.04.4 LTS |
+| OS | Windows / Linux | Ubuntu 24.04.4 LTS |
 | Python | ≥ 3.10 | ≥ 3.10 |
 | 依赖 | pip + venv | pip + venv |
+
+## 跨平台支持
+
+本项目**必须**在 **Windows**（开发调参）与 **Linux**（产线部署）上均可运行。详细开发规范见 [CLAUDE.md — 跨平台要求](CLAUDE.md#跨平台要求windows--linux)。
+
+### 快速对照
+
+| 操作 | Windows | Linux |
+|------|---------|-------|
+| 创建虚拟环境 | `.venv\Scripts\Activate.ps1` | `source .venv/bin/activate` |
+| 启动 Web 服务 | `start_app.bat` | `./start_app.sh` |
+| 停止 Web 服务 | `stop_app.bat` | `./stop_app.sh` |
+| 产线 kiosk | — | `deploy/kiosk.sh` |
+| 核心命令 | `python -m src.web_server` | 同上 |
+
+### 兼容性结论（代码审查）
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| Web 服务 / API / 前端 | ✅ | 纯 Python + 浏览器，无 OS 绑定 |
+| 配置 / 统计 / 图像 IO | ✅ | `pathlib` + UTF-8；`imread`/`imwrite` 支持中文路径 |
+| 双路相机服务 | ✅ | 按平台选择 OpenCV 后端（Win: DSHOW/MSMF，Linux: V4L2） |
+| CLI 单张/批量检测 | ✅ | 无 GUI 依赖 |
+| CLI `--debug` / `--camera` | ⚠️ | 需图形显示（`cv2.imshow`）；产线请用 Web UI |
+| Modbus IO | ✅ | `pymodbus` 可选，未安装时日志模式 |
+| 启动脚本 | ✅ | 各平台独立脚本，统一调用 `python -m src.web_server` |
+
+### 开发约定（摘要）
+
+- 路径只用 `pathlib.Path`，禁止硬编码盘符或反斜杠
+- 平台相关逻辑集中在 `camera_service` 等模块，不散落在业务代码中
+- 新增系统调用或原生依赖前，须确认两平台可用或提供降级路径
+- PR / 合并前在目标平台上执行 `pytest tests/`
 
 ## 相关文档
 

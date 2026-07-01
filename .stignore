@@ -1,33 +1,60 @@
 # Syncthing 忽略规则 — 不同步以下文件和目录
 
-# Python 虚拟环境
+# ===== 系统文件 =====
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+System Volume Information/
+*.lnk
+*.tmp
+~$*
+*.bak
+*.old
+.DS_Store
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+.settings/
+.project
+.classpath
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# ===== Python 虚拟环境 =====
 .venv/
 venv/
+env/
+.venv-backup/
 
-# Python 缓存
+# ===== Python 缓存 & 构建产物 =====
 __pycache__/
 *.py[cod]
 *.egg-info/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# ===== Node.js =====
+node_modules/
 
-# 系统文件
-Thumbs.db
-.DS_Store
+# ===== 版本控制系统 =====
+.git/
+.svn/
+.gitignore
+.gitattributes
 
-# 日志和输出
+# ===== Syncthing 内部文件 =====
+.stignore
+.stfolder
+.stversions/
+
+# ===== 自定义: 日志和输出 =====
 *.log
 output/
 
-# Node
-node_modules/
-
-# 配置文件（本地专用）
+# ===== 自定义: 本地配置文件 =====
 config.local.yaml
 
-# Syncthing 冲突文件（自动清理）
+# ===== Syncthing 冲突文件（自动清理）=====
 *.sync-conflict-*

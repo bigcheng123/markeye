@@ -1,6 +1,6 @@
 /** SET 模式四步设定向导 */
 
-import { confirmModal, infoModal, showToast } from "./layout.js";
+import { confirmModal, infoModal, infoModalHtml, showToast } from "./layout.js";
 import { isMockMode } from "./api-client.js";
 
 const STEP_TITLES = {
@@ -363,9 +363,11 @@ export class Wizard {
 
   _bindNav() {
     this.stepNav?.querySelectorAll(".wizard-step").forEach((btn) => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const s = parseInt(btn.dataset.step, 10);
-        if (s <= this.step) this.goToStep(s);
+        if (!Number.isFinite(s) || s < 1 || s > 4 || s === this.step) return;
+        await this._saveCurrentStep();
+        this.goToStep(s);
       });
     });
 
@@ -488,8 +490,10 @@ export class Wizard {
       const defaultId = data?.input?.camera_id != null ? parseInt(data.input.camera_id, 10) : cameras[0];
       _refreshDefaultCameraSelect(this.contentEl, cameras.length ? cameras : DEFAULT_CAMERAS_LIST(), defaultId);
 
+      this._bindStep1CameraEvents();
       this._step1Loaded = true;
     } catch {
+      this._bindStep1CameraEvents();
       this._step1Loaded = true;
     }
   }
@@ -517,12 +521,17 @@ export class Wizard {
               <label>延迟 (ms)</label>
               <input type="number" value="0" min="0" max="10000" data-field="trigger-delay" />
             </div>
-            <div class="wizard-form-row wizard-form-row--stack">
+            <div class="wizard-form-row wizard-form-row--camera-list">
               <label>相机号码</label>
-              <div id="wizard-camera-list" class="wizard-camera-list">
-                ${_renderCameraListRows(DEFAULT_CAMERAS_LIST())}
+              <div class="wizard-camera-list-wrap">
+                <div id="wizard-camera-list" class="wizard-camera-list">
+                  ${_renderCameraListRows(DEFAULT_CAMERAS_LIST())}
+                </div>
+                <div class="wizard-camera-list-actions">
+                  <button type="button" class="btn btn-secondary btn-camera-add" data-action="camera-add">＋ 追加相机</button>
+                  <button type="button" class="btn btn-secondary btn-camera-enumerate" data-action="camera-enumerate">🔍 枚举相机</button>
+                </div>
               </div>
-              <button type="button" class="btn btn-secondary btn-camera-add" data-action="camera-add">＋ 追加相机</button>
             </div>
             <div class="wizard-form-row">
               <label>默认相机</label>
@@ -722,6 +731,10 @@ export class Wizard {
         listEl.innerHTML = _renderCameraListRows(cameras);
         _refreshDefaultCameraSelect(this.contentEl, cameras);
         this._bindStep1CameraEvents();
+      });
+
+      this.contentEl?.querySelector('[data-action="camera-enumerate"]')?.addEventListener("click", () => {
+        this._enumerateCameras();
       });
 
       this._bindStep1CameraEvents();
@@ -1262,7 +1275,7 @@ export class Wizard {
       const card = document.createElement("article");
       card.className = `tool-card${selected}`;
       card.dataset.id = t.id;
-      card.dataset.state = "ok";
+      card.dataset.state = t.enabled === false ? "off" : "ok";
 
       let barHtml = `<input type="range" disabled min="0" max="100" value="0" style="width:100%" />`;
       if (t.type === "hsv_roi") {
@@ -1418,6 +1431,86 @@ export class Wizard {
     this._tools[idx] = t;
   }
 
+  _escapeHtml(text) {
+    return String(text ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  async _enumerateCameras() {
+    try {
+      let data;
+      if (isMockMode()) {
+        data = {
+          count: 2,
+          devices: [
+            {
+              device_id: 0,
+              model: "Mock USB Camera A",
+              backend: "MOCK",
+              width: 1920,
+              height: 1080,
+              accessible: true,
+            },
+            {
+              device_id: 1,
+              model: "Mock USB Camera B",
+              backend: "MOCK",
+              width: 1280,
+              height: 720,
+              accessible: true,
+            },
+          ],
+        };
+      } else {
+        data = await window.__markeyeApp?.api?.get?.("/api/cameras/enumerate");
+      }
+
+      const devices = Array.isArray(data?.devices) ? data.devices : [];
+      const count = data?.count ?? devices.length;
+      if (!devices.length) {
+        await infoModal("枚举相机", "未检测到可用相机设备。\n请确认相机已连接且未被其他程序占用。");
+        return;
+      }
+
+      const rows = devices
+        .map((d) => {
+          const res = d.width > 0 && d.height > 0 ? `${d.width}×${d.height}` : "—";
+          const status = d.accessible ? "可连接" : "不可用";
+          return `<tr>
+            <td>${this._escapeHtml(d.device_id)}</td>
+            <td>${this._escapeHtml(d.model || "—")}</td>
+            <td>${this._escapeHtml(res)}</td>
+            <td>${this._escapeHtml(d.backend || "—")}</td>
+            <td>${status}</td>
+          </tr>`;
+        })
+        .join("");
+
+      const html = `
+        <p class="camera-enum-summary">共检测到 <strong>${count}</strong> 个相机设备：</p>
+        <div class="camera-enum-table-wrap">
+          <table class="camera-enum-table">
+            <thead>
+              <tr>
+                <th>相机 ID</th>
+                <th>型号</th>
+                <th>分辨率</th>
+                <th>后端</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+      await infoModalHtml("枚举相机", html);
+    } catch {
+      showToast("枚举相机失败", "err");
+    }
+  }
+
   /** 按 STEP1 表单重连相机并刷新工具栏下拉 */
   async applyStep1Cameras({ silent = false } = {}) {
     if (isMockMode()) {
@@ -1433,7 +1526,6 @@ export class Wizard {
         if (okCount >= 1) showToast(`已连接 ${okCount} 路相机`, "ok");
         else showToast("相机连接失败，请检查设备", "warn");
       }
-      await window.__markeyeApp?.api?.pullCurrentFrame?.();
       await window.__markeyeApp?.syncCameraSelect?.();
       return res;
     } catch {
@@ -1468,7 +1560,6 @@ export class Wizard {
         }
         try {
           await window.__markeyeApp?.api?.post?.("/api/camera/select", { camera_id: cameraId });
-          await window.__markeyeApp?.api?.pullCurrentFrame?.();
           await window.__markeyeApp?.syncCameraSelect?.();
         } catch {
           showToast("切换默认相机失败", "err");
@@ -1500,6 +1591,10 @@ export class Wizard {
   /** @deprecated 使用 applyStep1Cameras */
   async applyStep1Camera(opts) {
     return this.applyStep1Cameras(opts);
+  }
+
+  async saveCurrentStep(options) {
+    return this._saveCurrentStep(options);
   }
 
   async _saveCurrentStep({ silent = true } = {}) {

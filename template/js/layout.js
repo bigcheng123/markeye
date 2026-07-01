@@ -90,24 +90,42 @@ export function confirmModal(message) {
 }
 
 export function infoModal(title, message) {
+  return infoModalContent(title, message, { html: false });
+}
+
+export function infoModalHtml(title, html) {
+  return infoModalContent(title, html, { html: true });
+}
+
+function infoModalContent(title, content, { html = false } = {}) {
   return new Promise((resolve) => {
     const overlay = document.querySelector("#info-overlay");
     const titleEl = overlay?.querySelector("#info-title");
     const msgEl = overlay?.querySelector("#info-message");
     const btnClose = overlay?.querySelector("#info-close");
     if (!overlay || !msgEl) {
-      alert(message);
+      alert(html ? title : content);
       resolve();
       return;
     }
 
     if (titleEl) titleEl.textContent = title;
-    msgEl.textContent = message;
+    if (html) {
+      msgEl.innerHTML = content;
+      msgEl.classList.add("modal__message--html");
+    } else {
+      msgEl.textContent = content;
+      msgEl.classList.remove("modal__message--html");
+    }
     overlay.classList.add("is-open");
 
     const onClose = () => {
       overlay.classList.remove("is-open");
       btnClose?.removeEventListener("click", onClose);
+      if (html) {
+        msgEl.innerHTML = "";
+        msgEl.classList.remove("modal__message--html");
+      }
       resolve();
     };
     btnClose?.addEventListener("click", onClose);

@@ -18,6 +18,8 @@
   --color-tool-selected: #fff3e0;
   --color-tool-ok-bg: #d4edda;
   --color-tool-ng-bg: #f8d7da;
+  --color-tool-off-bg: #e8e8e8;
+  --color-tool-off-border: #bdbdbd;
   --color-border: #a0a0a0;
   --color-idle: #757575;
   --color-wizard-step-active: #ff9900;

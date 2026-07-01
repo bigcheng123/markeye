@@ -53,7 +53,29 @@ def imwrite(path: str, img: np.ndarray) -> bool:
     success, buf = cv2.imencode(ext, img)
     if not success:
         return False
-    return buf.tofile(path)
+    buf.tofile(path)
+    return True
+
+
+def open_dir_in_file_manager(path: str | Path) -> None:
+    """在系统文件管理器中打开目录（Windows / macOS / Linux）。"""
+    import platform
+    import subprocess
+
+    folder = Path(path).resolve()
+    if not folder.is_dir():
+        folder = folder.parent
+    folder.mkdir(parents=True, exist_ok=True)
+    system = platform.system()
+    try:
+        if system == "Windows":
+            subprocess.Popen(["explorer", str(folder)])
+        elif system == "Darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+    except OSError:
+        logging.getLogger("markeye").warning("无法打开目录: %s", folder, exc_info=True)
 
 
 def draw_detection(

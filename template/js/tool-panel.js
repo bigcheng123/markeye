@@ -15,16 +15,24 @@ export class ToolPanel {
     this.onToolSelect = null;
   }
 
+  _activeToolKeys(inspections) {
+    return (inspections || []).map((insp) => insp.tool).filter(Boolean);
+  }
+
   _syncMetaFromInspections(inspections) {
     for (const insp of inspections || []) {
       const existing = this._meta[insp.tool] || {};
       this._meta[insp.tool] = {
-        id: existing.id || insp.tool || "—",
+        id: insp.tool || existing.id || "—",
         name: insp.name || existing.name || insp.tool,
         min: 0,
         max: 100,
         threshold: insp.threshold ?? existing.threshold ?? 0,
       };
+    }
+    const active = new Set(this._activeToolKeys(inspections));
+    for (const key of Object.keys(this._meta)) {
+      if (!active.has(key)) delete this._meta[key];
     }
   }
 
@@ -59,11 +67,13 @@ export class ToolPanel {
   update(data) {
     this._lastInspections = data.inspections || [];
     this._lastStats = data.stats || {};
+    const activeTools = this._activeToolKeys(this._lastInspections);
     this._syncMetaFromInspections(this._lastInspections);
 
-    if (!this.selectedTool || !this._meta[this.selectedTool]) {
-      this.selectedTool = this._lastInspections[0]?.tool || this.selectedTool;
+    if (!this.selectedTool || !activeTools.includes(this.selectedTool)) {
+      this.selectedTool = activeTools[0] || null;
     }
+    this._lastActiveTools = activeTools;
 
     if (!data.idle) {
       for (const insp of this._lastInspections) {

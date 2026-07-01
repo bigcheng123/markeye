@@ -627,6 +627,19 @@ export class ImageViewer {
     return this._lastOriginalB64;
   }
 
+  /** 主画面「保存」：当前显示模式对应的图像数据 */
+  getCurrentFrameForSave() {
+    if (!this._hasFrame) return null;
+    const image_base64 = this._resolveImageB64();
+    if (!image_base64) return null;
+    return {
+      image_base64,
+      width: this.imgWidth,
+      height: this.imgHeight,
+      mode: this.processMode,
+    };
+  }
+
   _applyDisplayMode() {
     this._loadedCacheKey = "";
     const b64 = this._resolveImageB64();
@@ -662,8 +675,34 @@ export class ImageViewer {
     if (this.placeholder) {
       const show = waiting && !livePreview;
       this.placeholder.classList.toggle("is-hidden", !show);
+      this.placeholder.classList.remove("viewport-placeholder--no-tools");
       this.placeholder.textContent = show ? "正在等待触发……" : "";
     }
+  }
+
+  _showNoToolsViewport(message) {
+    this.clearVerdict?.();
+    this._lastToolRois = [];
+    this._lastMarks = [];
+    this._lastOriginalB64 = "";
+    this._lastBinaryB64 = "";
+    this._loadedCacheKey = "no-tools";
+    this._hasFrame = true;
+    const w = 640;
+    const h = 480;
+    this.imgWidth = w;
+    this.imgHeight = h;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.ctx.fillStyle = "#000";
+    this.ctx.fillRect(0, 0, w, h);
+    if (this.placeholder) {
+      this.placeholder.classList.remove("is-hidden");
+      this.placeholder.classList.add("viewport-placeholder--no-tools");
+      this.placeholder.textContent = message || "未启用测量工具";
+    }
+    this._ensureVisibleScale();
+    this._render();
   }
 
   _markColor(passed) {
@@ -738,12 +777,21 @@ export class ImageViewer {
     this._previewCamSlot = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
   }
 
+  getPreviewCamSlot() {
+    return this._previewCamSlot ?? 0;
+  }
+
   refreshOverlays() {
     this._drawOverlays();
     this._drawRoiOverlay();
   }
 
   updateFrame(data) {
+    if (data?.no_tools) {
+      this._showNoToolsViewport(data.viewport_message);
+      return;
+    }
+
     if (data.preview_cam != null) {
       this.setPreviewCamSlot(data.preview_cam);
     }

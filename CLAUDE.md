@@ -9,10 +9,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Environments
 
-- **开发**: Windows (PowerShell)
+- **开发**: Windows (PowerShell) / Linux（可选）
 - **部署**: Ubuntu 24.04.4 LTS
 
-## Commands
+## 跨平台要求（Windows + Linux）
+
+MarkEye **必须**在 Windows（开发调参）与 Linux（产线部署，Ubuntu 24.04 LTS）上均可运行。新增或修改代码时请遵守：
+
+| 类别 | 规范 |
+|------|------|
+| **路径** | 一律使用 `pathlib.Path`；禁止硬编码 `\` 或盘符路径；对外 JSON/API 路径用正斜杠（`str(p).replace("\\", "/")` 或 `as_posix()`） |
+| **文件 IO** | 文本文件 `encoding="utf-8"`；图像读写使用 `utils.imread` / `utils.imwrite`（支持中文路径） |
+| **相机** | 平台相关逻辑集中在 `camera_service._capture_backends()`：Windows → DSHOW/MSMF，Linux → V4L2；CLI 相机模式复用 `_probe_camera` |
+| **进程/脚本** | 启动脚本分平台提供，核心入口统一为 `python -m src.web_server` 或 `python src/main.py` |
+| **前端** | 浏览器 SPA，不依赖 OS；仅通过 `http://` 访问后端 |
+| **可选依赖** | `pymodbus` 未安装时 IO 降级为日志模式，不得导致启动失败 |
+| **禁止** | `os.system` 调用平台命令、`shell=True` 拼接路径、假定当前工作目录 |
+
+### 启动脚本对照
+
+| 用途 | Windows | Linux / macOS |
+|------|---------|---------------|
+| 开发启动 Web | `start_app.bat` | `start_app.sh` |
+| 停止 Web（8080） | `stop_app.bat` | `stop_app.sh` |
+| 产线 kiosk | — | `deploy/kiosk.sh` |
+
+### 平台差异与限制
+
+- **产线主入口**为 Web 服务（无桌面 GUI 依赖）；CLI 的 `--debug` / `--camera` 使用 `cv2.imshow`，需要图形显示环境（Linux 需 `DISPLAY`，产线 kiosk 不依赖此项）。
+- **Linux 相机**需 V4L2 驱动；**Windows** 使用 DirectShow / Media Foundation。
+- **版本号**（`version.py`）依赖本机 `git`；无 git 时回退默认版本，不影响运行。
+- 单元测试应在两平台均可通过：`pytest tests/`（CI 建议在 Windows 与 Ubuntu 各跑一遍）。
 
 ### Environment
 
@@ -30,6 +57,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip freeze > requirements.txt
+
+# 启动 Web 服务（与 Windows 等效）
+./start_app.sh
 ```
 
 ### Run

@@ -119,8 +119,14 @@
   padding: 0;
 }
 
-.btn-camera-add {
+.wizard-camera-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 6px;
+}
+
+.btn-camera-add {
   align-self: flex-start;
 }
 
@@ -131,6 +137,14 @@
 
 .wizard-form-row--stack > label {
   margin-bottom: 4px;
+}
+
+.wizard-camera-list-wrap {
+  flex: 1;
+  max-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .btn-trigger-icon {
@@ -306,6 +320,17 @@
   background: var(--color-tool-ng-bg);
 }
 
+.tool-card[data-state="off"] {
+  border: 2px solid var(--color-tool-off-border);
+  border-left-width: 6px;
+  background: var(--color-tool-off-bg);
+}
+
+.tool-card[data-state="off"] .tool-card__name,
+.tool-card[data-state="off"] .tool-card__value {
+  color: var(--color-text-secondary);
+}
+
 .tool-card.is-selected {
   box-shadow: 0 0 0 2px var(--color-run-active);
 }
@@ -357,6 +382,10 @@
 .tool-card__bar input[type="range"] {
   width: 100%;
   accent-color: var(--color-ok);
+}
+
+.tool-card[data-state="off"] input[type="range"] {
+  accent-color: var(--color-tool-off-border);
 }
 
 /* Tool detail */
@@ -633,6 +662,14 @@
   padding: 0 var(--spacing-sm);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
+}
+
+.wizard-form-row--camera-list {
+  align-items: flex-start;
+}
+
+.wizard-form-row--camera-list > label {
+  align-self: flex-start;
 }
 
 .wizard-tool-params__hint {
@@ -919,11 +956,6 @@
   padding: 0;
 }
 
-.btn-camera-add {
-  align-self: flex-start;
-  margin-top: var(--spacing-xs);
-}
-
 /* Modal */
 .modal-overlay {
   display: none;
@@ -946,6 +978,47 @@
   min-width: 320px;
   max-width: 480px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+#info-overlay .modal {
+  max-width: 560px;
+}
+
+.modal__message--html {
+  margin: 0;
+}
+
+.camera-enum-summary {
+  margin: 0 0 var(--spacing-sm);
+  font-size: 13px;
+}
+
+.camera-enum-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.camera-enum-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.camera-enum-table th,
+.camera-enum-table td {
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+
+.camera-enum-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.camera-enum-table tbody tr:nth-child(even) {
+  background: #fafafa;
 }
 
 .modal__title {

@@ -52,6 +52,28 @@ def test_build_inspections_includes_enabled_tools():
     assert items[1]["passed"] is False
 
 
+def test_build_inspections_skips_disabled_tools():
+    pr = PipelineResult(
+        passed=True,
+        marks=[],
+        inspections=[],
+        tool_results=[
+            {"tool": "01", "name": "色彩识别", "passed": True, "value": 100, "threshold": 100, "fail_reasons": []},
+            {"tool": "02", "name": "轮廓识别", "passed": True, "value": 200, "threshold": 100, "fail_reasons": []},
+        ],
+        process_ms=5,
+    )
+    cfg = {
+        "tools": [
+            {"id": "01", "name": "色彩识别", "type": "hsv_roi", "enabled": False, "roi": {"shape": "rect", "x": 0, "y": 0, "w": 10, "h": 10}},
+            {"id": "02", "name": "轮廓识别", "type": "contour_roi", "enabled": True, "roi": {"shape": "rect", "x": 0, "y": 0, "w": 10, "h": 10}},
+        ]
+    }
+    items = build_inspections(pr, cfg)
+    assert [i["tool"] for i in items] == ["02"]
+    assert items[0]["value"] == 200
+
+
 def test_marks_to_json():
     mark = _mark()
     out = marks_to_json([mark], overall_passed=True)

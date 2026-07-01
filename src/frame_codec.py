@@ -12,6 +12,41 @@ import numpy as np
 
 from .display_images import build_tool_binary_image, has_active_tools, tools_rois_to_json
 from .tool_builder import build_inspections, marks_to_json
+from .utils import imwrite, open_dir_in_file_manager
+
+NO_TOOLS_VIEWPORT_MESSAGE = "未启用测量工具\n请在「设定 → STEP3」中启用至少一个工具"
+NO_TOOLS_FRAME_SIZE = (640, 480)
+
+
+def build_no_tools_frame(config: dict, stats: dict, *, idle: bool = True) -> dict:
+    """无启用工具时：黑屏占位帧，不产生检测判定。"""
+    cal = config.get("calibration", {})
+    trigger = config.get("trigger", {})
+    source = trigger.get("source", "internal")
+    w, h = NO_TOOLS_FRAME_SIZE
+    return {
+        "type": "frame",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "idle": idle,
+        "no_tools": True,
+        "viewport_message": NO_TOOLS_VIEWPORT_MESSAGE,
+        "overall": {"passed": None, "logic": _comprehensive_logic(config)},
+        "preview_cam": None,
+        "frame": {
+            "width": w,
+            "height": h,
+            "process_ms": None,
+            "image_base64": None,
+            "original_base64": None,
+            "binary_base64": None,
+        },
+        "marks": [],
+        "tool_rois": [],
+        "inspections": [],
+        "stats": stats,
+        "calibration": {"sample_count": cal.get("sample_count", 0)},
+        "trigger": {"source": source, "label": trigger_source_label(source)},
+    }
 
 
 def encode_image_b64(img: np.ndarray, quality: int = 70) -> str:
@@ -143,6 +178,7 @@ def build_result_frame(
     stats: dict,
     pipeline_result,
     original_image: np.ndarray,
+    preview_cam: int = 0,
 ) -> dict:
     cal = config.get("calibration", {})
     trigger = config.get("trigger", {})
@@ -172,7 +208,7 @@ def build_result_frame(
         "type": "frame",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "overall": {"passed": passed, "logic": _comprehensive_logic(config)},
-        "preview_cam": 0,
+        "preview_cam": max(0, min(1, int(preview_cam))),
         "frame": frame_info,
         "marks": marks_json,
         "tool_rois": tools_rois_to_json(config),
@@ -181,6 +217,24 @@ def build_result_frame(
         "calibration": {"sample_count": cal.get("sample_count", 0)},
         "trigger": {"source": source, "label": trigger_source_label(source)},
     }
+
+
+def save_display_frame(
+    image: np.ndarray,
+    save_dir: Path,
+    *,
+    prefix: str = "capture",
+    open_folder: bool = True,
+) -> Path:
+    """保存当前显示画面到指定目录，并可选打开该目录。"""
+    save_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    path = save_dir / name
+    if not imwrite(str(path), image):
+        raise OSError(f"无法写入图像: {path}")
+    if open_folder:
+        open_dir_in_file_manager(save_dir)
+    return path
 
 
 def maybe_save_result(config: dict, passed: bool, image: np.ndarray) -> Optional[str]:

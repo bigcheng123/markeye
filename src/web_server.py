@@ -20,10 +20,24 @@ from pydantic import BaseModel
 
 from .calibration import CalibrationService
 from .camera_config import available_camera_ids, camera_id_to_cam_slot, slot_device_ids
-from .camera_service import CameraService
+from .camera_service import CameraService, enumerate_camera_devices
 from .config_store import ConfigStore
-from .display_images import _hsv_hit_mask, build_tool_binary_image, has_active_tools
-from .frame_codec import build_idle_frame, build_result_frame, decode_image_b64, encode_image_b64, maybe_save_result
+from .display_images import (
+    _hsv_hit_mask,
+    build_tool_binary_image,
+    first_enabled_tool_cam,
+    has_active_tools,
+    pick_primary_preview,
+)
+from .frame_codec import (
+    build_idle_frame,
+    build_no_tools_frame,
+    build_result_frame,
+    decode_image_b64,
+    encode_image_b64,
+    maybe_save_result,
+    save_display_frame,
+)
 from .io.modbus_client import ModbusIOService
 from .pipeline import DetectionPipeline
 from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, run_roi_tools, sample_hsv_in_roi
@@ -57,8 +71,14 @@ class AppState:
         self, frame: Optional[np.ndarray] = None, *, fast_preview: bool = False, slot: Optional[int] = None
     ) -> dict:
         cfg = self.config_store.get_cached()
+        if not has_active_tools(cfg):
+            return build_no_tools_frame(cfg, self.stats.snapshot(), idle=True)
         if slot is None:
-            slot = camera_id_to_cam_slot(cfg)
+            slot = (
+                first_enabled_tool_cam(cfg)
+                if has_active_tools(cfg)
+                else camera_id_to_cam_slot(cfg)
+            )
         preview = frame if frame is not None else self.camera.get_live_frame(slot)
         images = preview
         if has_active_tools(cfg) and preview is not None:
@@ -136,13 +156,9 @@ class AppState:
 
     def run_detection(self, images: np.ndarray | dict[int, np.ndarray]) -> dict:
         cfg = self.config_store.get_cached()
-        if isinstance(images, dict):
-            # numpy.ndarray 不能用于 `or` 真假判断（会触发 ValueError）
-            primary = images.get(0)
-            if primary is None:
-                primary = next((f for f in images.values() if f is not None), None)
-        else:
-            primary = images
+        if not has_active_tools(cfg):
+            return build_no_tools_frame(cfg, self.stats.snapshot(), idle=True)
+        primary, preview_cam = pick_primary_preview(images, cfg)
         if primary is None:
             self.stats.record_trerr()
             self.io.write_result(False, trerr=True)
@@ -156,7 +172,9 @@ class AppState:
         self.io.write_result(result.passed)
         save_img = result.result_image if result.result_image is not None else primary
         maybe_save_result(cfg, result.passed, save_img)
-        return build_result_frame(cfg, self.stats.snapshot(), result, primary)
+        return build_result_frame(
+            cfg, self.stats.snapshot(), result, primary, preview_cam=preview_cam
+        )
 
 
 state = AppState()
@@ -235,6 +253,10 @@ async def _preview_loop():
         if time.monotonic() < state._preview_paused_until:
             continue
         cfg = state.config_store.get_cached()
+        if not has_active_tools(cfg):
+            payload = await asyncio.to_thread(state.build_idle_payload)
+            await state.broadcast(payload)
+            continue
         slot = camera_id_to_cam_slot(cfg)
         frame = await asyncio.to_thread(state.camera.get_live_frame, slot)
         if frame is None:
@@ -273,6 +295,14 @@ async def camera_options():
         "camera_id": camera_id,
         "connected": state.camera.connected,
     }
+
+
+@app.get("/api/cameras/enumerate")
+async def cameras_enumerate(max_probe: int = 10):
+    """枚举本机可打开的相机设备（OpenCV 设备索引）。"""
+    limit = max(1, min(32, int(max_probe)))
+    devices = await asyncio.to_thread(enumerate_camera_devices, max_probe=limit)
+    return {"count": len(devices), "devices": devices}
 
 
 @app.get("/api/device")
@@ -517,6 +547,47 @@ async def get_current_frame():
     return state._last_frame_payload
 
 
+def _capture_save_dir(config: dict) -> Path:
+    output = (config or {}).get("output", {})
+    rel = output.get("capture_dir", "output/captures")
+    path = Path(str(rel))
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+@app.post("/api/frame/save")
+async def save_current_frame(body: Optional[dict] = None):
+    """保存主画面当前显示图像到项目目录，并打开该目录。"""
+    body = body or {}
+    b64 = body.get("image_base64")
+    if not b64:
+        raise HTTPException(400, "缺少 image_base64")
+    try:
+        frame = await asyncio.to_thread(decode_image_b64, str(b64))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    cfg = state.config_store.get_cached()
+    save_dir = _capture_save_dir(cfg)
+    open_folder = body.get("open_folder", True) is not False
+
+    def _save() -> Path:
+        return save_display_frame(frame, save_dir, open_folder=open_folder)
+
+    try:
+        path = await asyncio.to_thread(_save)
+    except OSError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    return {
+        "ok": True,
+        "path": str(path).replace("\\", "/"),
+        "filename": path.name,
+        "dir": str(save_dir).replace("\\", "/"),
+    }
+
+
 @app.post("/api/camera/switch")
 async def camera_switch():
     ok = state.camera.switch()
@@ -544,6 +615,32 @@ async def get_camera_live(cam: int = 0):
         "width": w,
         "height": h,
         "cam": slot,
+    }
+
+
+@app.get("/api/cameras/snapshot")
+async def get_camera_snapshot(device_id: int = 0):
+    """向导 STEP1 硬件测试：按 OpenCV 设备号单帧抓拍，不依赖测量工具。"""
+    dev = int(device_id)
+    frame, slot = await asyncio.to_thread(state.camera.capture_device_snapshot, dev)
+    if frame is None:
+        raise HTTPException(404, f"相机 {dev} 抓拍失败")
+    h, w = frame.shape[:2]
+    cfg = state.config_store.get_cached()
+    quality = int(cfg.get("output", {}).get("jpeg_quality", 70))
+    preview_cam = slot if slot is not None else 0
+    if slot is None:
+        cameras = available_camera_ids(cfg)
+        try:
+            preview_cam = max(0, min(1, cameras.index(dev)))
+        except ValueError:
+            preview_cam = 0
+    return {
+        "image_base64": encode_image_b64(frame, quality),
+        "width": w,
+        "height": h,
+        "device_id": dev,
+        "cam": preview_cam,
     }
 
 

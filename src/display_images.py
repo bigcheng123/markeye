@@ -42,6 +42,50 @@ def has_active_tools(config: dict) -> bool:
     return False
 
 
+def first_enabled_tool_cam(config: dict, default: int = 0) -> int:
+    """首个启用工具对应的相机槽位（0/1）。"""
+    for t in (config or {}).get("tools") or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("enabled", True) is False:
+            continue
+        try:
+            return max(0, min(1, int(t.get("cam", default))))
+        except (TypeError, ValueError):
+            return default
+    return max(0, min(1, int(default)))
+
+
+def pick_primary_preview(
+    images: np.ndarray | dict[int, np.ndarray] | None,
+    config: dict,
+) -> tuple[np.ndarray | None, int]:
+    """按启用工具顺序选取主预览图及其相机槽位。"""
+    if images is None:
+        return None, first_enabled_tool_cam(config)
+
+    if isinstance(images, dict):
+        if has_active_tools(config):
+            for t in (config or {}).get("tools") or []:
+                if not isinstance(t, dict) or t.get("enabled", True) is False:
+                    continue
+                try:
+                    slot = max(0, min(1, int(t.get("cam", 0))))
+                except (TypeError, ValueError):
+                    slot = 0
+                frame = images.get(slot)
+                if frame is not None:
+                    return frame, slot
+        primary = images.get(0)
+        if primary is None:
+            primary = next((f for f in images.values() if f is not None), None)
+        slot = 0 if images.get(0) is primary else first_enabled_tool_cam(config)
+        return primary, slot
+
+    slot = first_enabled_tool_cam(config) if has_active_tools(config) else 0
+    return images, slot
+
+
 def _apply_roi_mask(mask: np.ndarray, crop_mask: np.ndarray | None) -> np.ndarray:
     if crop_mask is None:
         return mask

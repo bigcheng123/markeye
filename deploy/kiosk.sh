@@ -16,7 +16,19 @@ SERVER_PID=$!
 sleep 2
 
 export DISPLAY="${DISPLAY:-:0}"
-chromium-browser --kiosk --app=http://127.0.0.1:8080/template/ &
+CHROMIUM=""
+for candidate in chromium-browser chromium google-chrome; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    CHROMIUM="$candidate"
+    break
+  fi
+done
+if [ -z "$CHROMIUM" ]; then
+  echo "[错误] 未找到 Chromium/Chrome，请安装: sudo apt install chromium-browser"
+  kill "$SERVER_PID" 2>/dev/null || true
+  exit 1
+fi
+"$CHROMIUM" --kiosk --app=http://127.0.0.1:8080/template/ &
 UI_PID=$!
 
 trap "kill $SERVER_PID $UI_PID 2>/dev/null || true" EXIT

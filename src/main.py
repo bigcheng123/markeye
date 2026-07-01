@@ -14,6 +14,7 @@ from pathlib import Path
 import cv2
 import yaml
 
+from .camera_service import _probe_camera
 from .pipeline import DetectionPipeline
 from .utils import imread, imwrite, setup_logger
 
@@ -74,8 +75,8 @@ def process_image(
 
 def process_camera(camera_id: int, cfg: dict):
     """实时相机检测循环"""
-    cap = cv2.VideoCapture(camera_id)
-    if not cap.isOpened():
+    cap = _probe_camera(camera_id)
+    if cap is None:
         logger.error(f"无法打开相机 {camera_id}")
         return
 

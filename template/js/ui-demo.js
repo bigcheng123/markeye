@@ -58,13 +58,17 @@ export async function runUiDemo(app) {
     app.clickEl("#btn-learn-add");
   });
 
-  await step("RUN 模式 — 调节阈值", async () => {
+  await step("RUN 模式 — 调节阈值 → STEP3", async () => {
     app.clickEl("#btn-threshold");
-    const slider = document.querySelector("#detail-threshold");
-    if (slider) {
-      slider.value = "65";
-      slider.dispatchEvent(new Event("input"));
+    await delay(400);
+    if (app.getView() !== "wizard" || app.wizard?.step !== 3) {
+      throw new Error("调节阈值应进入 STEP3 工具设定");
     }
+    document.querySelector("#wizard-exit")?.click();
+    await delay(300);
+    app.clickMode("run");
+    await delay(300);
+    if (app.getView() !== "run") throw new Error("退出 STEP3 后应返回运行模式");
   });
 
   await step("RUN 模式 — 保存帧", async () => {

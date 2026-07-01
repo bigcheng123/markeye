@@ -93,6 +93,22 @@ class MockApiClient {
       this.onFrame(frame);
       return frame;
     }
+    if (path === "/api/frame/save") {
+      const viewer = window.__markeyeApp?.imageViewer;
+      const payload = viewer?.getCurrentFrameForSave?.() || body;
+      if (!payload?.image_base64) throw new Error("no frame");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const a = document.createElement("a");
+      a.href = `data:image/jpeg;base64,${payload.image_base64}`;
+      a.download = `capture_${stamp}.jpg`;
+      a.click();
+      return {
+        ok: true,
+        mock: true,
+        filename: `capture_${stamp}.jpg`,
+        dir: "mock/download",
+      };
+    }
     if (path === "/api/stats/reset") {
       const { resetMockStats } = await import("./mock-data.js");
       resetMockStats();
@@ -241,6 +257,30 @@ class MockApiClient {
         mock: true,
       };
     }
+    if (path === "/api/cameras/enumerate") {
+      return {
+        count: 2,
+        devices: [
+          {
+            device_id: 0,
+            model: "Mock USB Camera A",
+            backend: "MOCK",
+            width: 1920,
+            height: 1080,
+            accessible: true,
+          },
+          {
+            device_id: 1,
+            model: "Mock USB Camera B",
+            backend: "MOCK",
+            width: 1280,
+            height: 720,
+            accessible: true,
+          },
+        ],
+        mock: true,
+      };
+    }
     if (path.startsWith("/api/calibration/master/status")) {
       const { hasMockMaster } = await import("./mock-data.js");
       return {
@@ -259,6 +299,12 @@ class MockApiClient {
     if (path.startsWith("/api/cameras/live")) {
       const img = getMockMasterImage() || { image_base64: "", width: 800, height: 500 };
       return img;
+    }
+    if (path.startsWith("/api/cameras/snapshot")) {
+      const img = captureMockMasterFromLive(0);
+      const devMatch = path.match(/[?&]device_id=(\d+)/);
+      const deviceId = devMatch ? parseInt(devMatch[1], 10) : 0;
+      return { ...img, device_id: deviceId, cam: 0 };
     }
     return { ok: true, mock: true, path, state: getMockState() };
   }

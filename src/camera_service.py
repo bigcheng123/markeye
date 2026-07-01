@@ -18,6 +18,83 @@ from .utils import imread
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _capture_backends() -> list[int | None]:
+    if sys.platform == "win32":
+        return [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
+    return [cv2.CAP_V4L2, None]
+
+
+def _probe_camera(cam_id: int) -> Optional[cv2.VideoCapture]:
+    """尝试打开设备并读取一帧；成功则返回已打开的 VideoCapture。"""
+    for backend in _capture_backends():
+        cap = (
+            cv2.VideoCapture(cam_id)
+            if backend is None
+            else cv2.VideoCapture(cam_id, backend)
+        )
+        if not cap.isOpened():
+            cap.release()
+            continue
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            return cap
+        cap.release()
+    return None
+
+
+def _device_model(cap: cv2.VideoCapture) -> str:
+    for prop in (
+        getattr(cv2, "CAP_PROP_DEVICE_DESCRIPTION", None),
+        getattr(cv2, "CAP_PROP_GUID", None),
+    ):
+        if prop is None:
+            continue
+        try:
+            val = cap.get(prop)
+        except cv2.error:
+            continue
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, (int, float)) and val:
+            return str(int(val) if float(val).is_integer() else val)
+    try:
+        backend = cap.getBackendName()
+        if backend:
+            return f"Camera ({backend})"
+    except cv2.error:
+        pass
+    return "—"
+
+
+def enumerate_camera_devices(*, max_probe: int = 10) -> list[dict]:
+    """探测本机可打开的 OpenCV 相机（设备索引 0 .. max_probe-1）。"""
+    limit = max(1, int(max_probe))
+    devices: list[dict] = []
+    for device_id in range(limit):
+        cap = _probe_camera(device_id)
+        if cap is None:
+            continue
+        try:
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            try:
+                backend = cap.getBackendName() or "—"
+            except cv2.error:
+                backend = "—"
+            devices.append({
+                "device_id": device_id,
+                "model": _device_model(cap),
+                "backend": backend,
+                "width": w,
+                "height": h,
+                "accessible": True,
+            })
+        finally:
+            cap.release()
+    return devices
+
+
 @dataclass
 class _SlotState:
     device_id: int = 0
@@ -99,27 +176,7 @@ class CameraService:
         return out
 
     def _open_capture(self, cam_id: int) -> Optional[cv2.VideoCapture]:
-        backends: list[int | None] = []
-        if sys.platform == "win32":
-            backends.extend([cv2.CAP_DSHOW, cv2.CAP_MSMF, None])
-        else:
-            backends.extend([cv2.CAP_V4L2, None])
-
-        for backend in backends:
-            cap = (
-                cv2.VideoCapture(cam_id)
-                if backend is None
-                else cv2.VideoCapture(cam_id, backend)
-            )
-            if not cap.isOpened():
-                cap.release()
-                continue
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                return cap
-            cap.release()
-        return None
+        return _probe_camera(cam_id)
 
     def connect(self, camera_id: Optional[int] = None) -> bool:
         """兼容旧 API：连接全部槽位；camera_id 仅更新 slot0 设备号。"""
@@ -297,3 +354,21 @@ class CameraService:
             if state.last_frame is None:
                 return None
             return state.last_frame.copy()
+
+    def capture_device_snapshot(self, device_id: int) -> tuple[Optional[np.ndarray], Optional[int]]:
+        """按 OpenCV 设备号单帧抓拍；优先已连接槽位，否则临时打开设备。"""
+        dev = int(device_id)
+        devices = slot_device_ids(self.config)
+        for slot in range(NUM_CAMERA_SLOTS):
+            if slot < len(devices) and int(devices[slot]) == dev:
+                frame = self.get_live_frame(slot)
+                if frame is not None:
+                    return frame, slot
+        cap = _probe_camera(dev)
+        if cap is None:
+            return None, None
+        ret, frame = cap.read()
+        cap.release()
+        if ret and frame is not None:
+            return frame, None
+        return None, None
