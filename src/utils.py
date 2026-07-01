@@ -2,6 +2,7 @@
 
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,6 +23,14 @@ def setup_logger(name: str = "markeye", level: str = "INFO") -> logging.Logger:
         logger.addHandler(handler)
 
     return logger
+
+
+def dated_archive_dir(base: Path, when: datetime | None = None) -> Path:
+    """在存档根目录下创建并返回按日期命名的子目录（YYYYMMDD）。"""
+    when = when or datetime.now()
+    day_dir = base / when.strftime("%Y%m%d")
+    day_dir.mkdir(parents=True, exist_ok=True)
+    return day_dir
 
 
 def json_safe(value: Any) -> Any:

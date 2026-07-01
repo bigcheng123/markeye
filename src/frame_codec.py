@@ -13,7 +13,7 @@ import numpy as np
 
 from .display_images import build_tool_binary_image, has_active_tools, tools_rois_to_json
 from .tool_builder import build_inspections, marks_to_json
-from .utils import imwrite, open_dir_in_file_manager
+from .utils import dated_archive_dir, imwrite, open_dir_in_file_manager
 
 NO_TOOLS_VIEWPORT_MESSAGE = "未启用测量工具\n请在「设定 → STEP3」中启用至少一个工具"
 NO_TOOLS_FRAME_SIZE = (640, 480)
@@ -236,14 +236,15 @@ def save_display_frame(
     prefix: str = "capture",
     open_folder: bool = True,
 ) -> Path:
-    """保存当前显示画面到指定目录，并可选打开该目录。"""
-    save_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-    path = save_dir / name
+    """保存当前显示画面到按日期命名的子目录，并可选打开该目录。"""
+    now = datetime.now()
+    day_dir = dated_archive_dir(save_dir, now)
+    name = f"{prefix}_{now.strftime('%H%M%S')}.jpg"
+    path = day_dir / name
     if not imwrite(str(path), image):
         raise OSError(f"无法写入图像: {path}")
     if open_folder:
-        open_dir_in_file_manager(save_dir)
+        open_dir_in_file_manager(day_dir)
     return path
 
 
@@ -257,10 +258,12 @@ def maybe_save_result(config: dict, passed: bool, image: np.ndarray) -> Optional
     if policy == "ng" and passed:
         return None
 
-    save_dir = Path(output.get("save_dir", "output"))
-    save_dir.mkdir(parents=True, exist_ok=True)
+    save_base = Path(output.get("save_dir", "output"))
+    now = datetime.now()
+    day_dir = dated_archive_dir(save_base, now)
     tag = "ok" if passed else "ng"
-    name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{tag}.jpg"
-    path = save_dir / name
-    cv2.imwrite(str(path), image)
+    name = f"{now.strftime('%H%M%S')}_{tag}.jpg"
+    path = day_dir / name
+    if not imwrite(str(path), image):
+        return None
     return str(path)
