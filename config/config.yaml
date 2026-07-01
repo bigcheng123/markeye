@@ -228,8 +228,8 @@ output:
   stats_file: output/stats.json
   jpeg_quality: 70
   history:
-    enabled: false
+    enabled: true
     format: csv
     dir: output/history/
     flush_on_profile_switch: true
-    flush_on_idle_minutes: 50
+    flush_on_idle_minutes: 5
