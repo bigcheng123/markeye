@@ -9,6 +9,8 @@ export class ToolPanel {
     this.selectedTool = null;
     this.history = {};
     this._meta = { ...getToolMeta() };
+    this._cardEls = new Map();
+    this._chartRaf = null;
     this._bindList();
     this._renderDetailShell();
     this.onThresholdChange = null;
@@ -87,40 +89,87 @@ export class ToolPanel {
     this._renderDetail(this._lastInspections, this._lastStats);
   }
 
+  _ensureCard(insp, meta) {
+    let card = this._cardEls.get(insp.tool);
+    if (!card) {
+      card = document.createElement("article");
+      card.className = "tool-card";
+      card.dataset.tool = insp.tool;
+      card.innerHTML = `
+        <header class="tool-card__header">
+          <span class="tool-card__id"></span>
+          <span class="tool-card__name"></span>
+          <span class="tool-card__status-wrap"></span>
+          <span class="tool-card__value"></span>
+        </header>
+        <div class="tool-card__bar">
+          <input type="range" disabled min="0" max="100" />
+        </div>
+      `;
+      this._cardEls.set(insp.tool, card);
+      this.listEl?.appendChild(card);
+    }
+    return card;
+  }
+
+  _updateCard(card, insp, meta) {
+    const state = insp.passed === null ? "idle" : insp.passed ? "ok" : "ng";
+    const val = insp.value ?? meta.threshold;
+
+    card.dataset.state = state;
+    card.classList.toggle("is-selected", insp.tool === this.selectedTool);
+
+    const idEl = card.querySelector(".tool-card__id");
+    const nameEl = card.querySelector(".tool-card__name");
+    const statusWrap = card.querySelector(".tool-card__status-wrap");
+    const valueEl = card.querySelector(".tool-card__value");
+    const rangeEl = card.querySelector(".tool-card__bar input");
+
+    if (idEl) idEl.textContent = meta.id;
+    if (nameEl) nameEl.textContent = meta.name;
+    if (valueEl) valueEl.textContent = String(val);
+    if (rangeEl) rangeEl.value = String(val);
+
+    if (statusWrap) {
+      let badge = statusWrap.querySelector(".tool-card__status");
+      if (state === "idle") {
+        statusWrap.innerHTML = "";
+      } else {
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "tool-card__status";
+          statusWrap.innerHTML = "";
+          statusWrap.appendChild(badge);
+        }
+        badge.className = `tool-card__status tool-card__status--${state}`;
+        badge.textContent = state === "ok" ? "OK" : "NG";
+      }
+    }
+  }
+
   _renderCards(inspections) {
     if (!this.listEl) return;
-    this.listEl.innerHTML = "";
 
+    const active = new Set();
     for (const insp of inspections) {
       const meta = this._meta[insp.tool];
       if (!meta) continue;
+      active.add(insp.tool);
+      const card = this._ensureCard(insp, meta);
+      this._updateCard(card, insp, meta);
+    }
 
-      const state = insp.passed === null ? "idle" : insp.passed ? "ok" : "ng";
-      const selected = insp.tool === this.selectedTool ? " is-selected" : "";
-      const val = insp.value ?? meta.threshold;
-      const statusBadge =
-        state === "ok"
-          ? '<span class="tool-card__status tool-card__status--ok">OK</span>'
-          : state === "ng"
-            ? '<span class="tool-card__status tool-card__status--ng">NG</span>'
-            : "";
+    for (const [tool, card] of this._cardEls) {
+      if (!active.has(tool)) {
+        card.remove();
+        this._cardEls.delete(tool);
+      }
+    }
 
-      const card = document.createElement("article");
-      card.className = `tool-card${selected}`;
-      card.dataset.tool = insp.tool;
-      card.dataset.state = state;
-      card.innerHTML = `
-        <header class="tool-card__header">
-          <span class="tool-card__id">${meta.id}</span>
-          <span class="tool-card__name">${meta.name}</span>
-          ${statusBadge}
-          <span class="tool-card__value">${val}</span>
-        </header>
-        <div class="tool-card__bar">
-          <input type="range" disabled min="0" max="100" value="${val}" />
-        </div>
-      `;
-      this.listEl.appendChild(card);
+    const order = inspections.map((i) => i.tool).filter((t) => this._cardEls.has(t));
+    for (const tool of order) {
+      const card = this._cardEls.get(tool);
+      if (card) this.listEl.appendChild(card);
     }
   }
 
@@ -145,7 +194,7 @@ export class ToolPanel {
       this.detailEl.querySelector("#detail-threshold-val").textContent = v;
       setToolThreshold(this.selectedTool, v);
       this.onThresholdChange?.(this.selectedTool, v);
-      this._drawChart(this.history[this.selectedTool] || [v], v);
+      this._scheduleChartDraw(this.history[this.selectedTool] || [v], v);
     });
   }
 
@@ -186,7 +235,18 @@ export class ToolPanel {
       `;
     }
 
-    this._drawChart(vals, threshold);
+    this._scheduleChartDraw(vals, threshold);
+  }
+
+  _scheduleChartDraw(values, threshold = 73) {
+    this._pendingChart = { values, threshold };
+    if (this._chartRaf != null) return;
+    this._chartRaf = requestAnimationFrame(() => {
+      this._chartRaf = null;
+      const pending = this._pendingChart;
+      this._pendingChart = null;
+      if (pending) this._drawChart(pending.values, pending.threshold);
+    });
   }
 
   _drawChart(values, threshold = 73) {

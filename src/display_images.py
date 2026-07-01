@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .tools.roi_tools import crop_roi, run_roi_tools
+from .tools.roi_tools import hsv_hit_mask, run_roi_tools
 
 
 def tools_rois_to_json(config: dict) -> list[dict]:
@@ -40,6 +40,21 @@ def has_active_tools(config: dict) -> bool:
         if isinstance(t, dict) and t.get("enabled", True) is not False:
             return True
     return False
+
+
+def required_tool_cam_slots(config: dict) -> set[int]:
+    """启用工具实际用到的相机槽位。"""
+    slots: set[int] = set()
+    for t in (config or {}).get("tools") or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("enabled", True) is False:
+            continue
+        try:
+            slots.add(max(0, min(1, int(t.get("cam", 0)))))
+        except (TypeError, ValueError):
+            slots.add(0)
+    return slots or {0}
 
 
 def first_enabled_tool_cam(config: dict, default: int = 0) -> int:
@@ -86,38 +101,6 @@ def pick_primary_preview(
     return images, slot
 
 
-def _apply_roi_mask(mask: np.ndarray, crop_mask: np.ndarray | None) -> np.ndarray:
-    if crop_mask is None:
-        return mask
-    out = np.zeros_like(mask)
-    out[crop_mask > 0] = mask[crop_mask > 0]
-    return out
-
-
-def _hsv_hit_mask(img: np.ndarray, tool: dict) -> np.ndarray:
-    h, w = img.shape[:2]
-    canvas = np.zeros((h, w), dtype=np.uint8)
-    roi = (tool or {}).get("roi", {}) or {}
-    params = (tool or {}).get("params", {}) or {}
-    lower = params.get("h_lower") or params.get("lower") or [0, 0, 0]
-    upper = params.get("h_upper") or params.get("upper") or [180, 255, 255]
-    lower = np.array([int(lower[0]), int(lower[1]), int(lower[2])], dtype=np.uint8)
-    upper = np.array([int(upper[0]), int(upper[1]), int(upper[2])], dtype=np.uint8)
-
-    crop = crop_roi(img, roi)
-    if crop.img.size == 0:
-        return canvas
-
-    hsv = cv2.cvtColor(crop.img, cv2.COLOR_BGR2HSV)
-    local = cv2.inRange(hsv, lower, upper)
-    local = _apply_roi_mask(local, crop.mask)
-    ox, oy = crop.offset_xy
-    canvas[oy : oy + local.shape[0], ox : ox + local.shape[1]] = cv2.bitwise_or(
-        canvas[oy : oy + local.shape[0], ox : ox + local.shape[1]], local
-    )
-    return canvas
-
-
 def _contour_hit_mask(img: np.ndarray, tool: dict, tool_result: dict | None) -> np.ndarray:
     h, w = img.shape[:2]
     canvas = np.zeros((h, w), dtype=np.uint8)
@@ -160,13 +143,19 @@ def build_tool_binary_image(
         if t.get("enabled", True) is False:
             continue
         key = t.get("id") or t.get("name") or "tool"
+        tr = results_by_tool.get(key)
+        cached = tr.get("_hit_mask") if tr else None
+        if cached is not None and cached.shape[:2] == (h, w):
+            canvas = cv2.bitwise_or(canvas, cached)
+            continue
         t_type = t.get("type")
         if t_type == "hsv_roi":
-            mask = _hsv_hit_mask(img, t)
+            mask = hsv_hit_mask(img, t)
         elif t_type == "contour_roi":
-            mask = _contour_hit_mask(img, t, results_by_tool.get(key))
+            mask = _contour_hit_mask(img, t, tr)
         else:
             continue
         canvas = cv2.bitwise_or(canvas, mask)
 
     return canvas
+

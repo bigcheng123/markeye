@@ -94,6 +94,39 @@ def sample_hsv_in_roi(
     return int(med[0]), int(med[1]), int(med[2])
 
 
+def hsv_hit_mask(img: np.ndarray, tool: dict) -> np.ndarray:
+    """ROI 内 HSV 命中像素掩膜（全图坐标）。"""
+    h, w = img.shape[:2]
+    canvas = np.zeros((h, w), dtype=np.uint8)
+    roi = (tool or {}).get("roi", {}) or {}
+    params = (tool or {}).get("params", {}) or {}
+    lower = params.get("h_lower") or params.get("lower") or [0, 0, 0]
+    upper = params.get("h_upper") or params.get("upper") or [180, 255, 255]
+    lower = np.array([int(lower[0]), int(lower[1]), int(lower[2])], dtype=np.uint8)
+    upper = np.array([int(upper[0]), int(upper[1]), int(upper[2])], dtype=np.uint8)
+
+    crop = crop_roi(img, roi)
+    if crop.img.size == 0:
+        return canvas
+
+    hsv = cv2.cvtColor(crop.img, cv2.COLOR_BGR2HSV)
+    local = cv2.inRange(hsv, lower, upper)
+    local = _apply_roi_mask(local, crop.mask)
+    ox, oy = crop.offset_xy
+    canvas[oy : oy + local.shape[0], ox : ox + local.shape[1]] = cv2.bitwise_or(
+        canvas[oy : oy + local.shape[0], ox : ox + local.shape[1]], local
+    )
+    return canvas
+
+
+def _apply_roi_mask(mask: np.ndarray, crop_mask: np.ndarray | None) -> np.ndarray:
+    if crop_mask is None:
+        return mask
+    out = np.zeros_like(mask)
+    out[crop_mask > 0] = mask[crop_mask > 0]
+    return out
+
+
 def compute_hsv_area_in_roi(
     img: np.ndarray,
     roi: dict,
@@ -149,9 +182,12 @@ def run_hsv_roi_tool(img: np.ndarray, tool: dict) -> dict:
             "details": {},
         }
 
-    area_info = compute_hsv_area_in_roi(img, roi, lower, upper)
-    match = int(area_info["match"])
-    roi_total = int(area_info["total"])
+    hit_mask = hsv_hit_mask(img, tool)
+    ox, oy = crop.offset_xy
+    local = hit_mask[oy : oy + crop.img.shape[0], ox : ox + crop.img.shape[1]]
+    roi_mask = _roi_pixel_mask(crop)
+    match = int(cv2.countNonZero(cv2.bitwise_and(local, roi_mask)))
+    roi_total = int(cv2.countNonZero(roi_mask))
     area_min = _parse_area_limit(params.get("match_area_min"), 0)
     area_max = _parse_area_limit(params.get("match_area_max"), roi_total if roi_total > 0 else match)
 
@@ -170,6 +206,7 @@ def run_hsv_roi_tool(img: np.ndarray, tool: dict) -> dict:
         "value": match,
         "threshold": area_max,
         "fail_reasons": fail_reasons,
+        "_hit_mask": hit_mask,
         "details": {
             "lower": lower,
             "upper": upper,
@@ -178,7 +215,7 @@ def run_hsv_roi_tool(img: np.ndarray, tool: dict) -> dict:
             "match_area_min": area_min,
             "match_area_max": area_max,
             "roi_total": roi_total,
-            "match_ratio": area_info["ratio"],
+            "match_ratio": float(match / roi_total) if roi_total else 0.0,
         },
     }
 

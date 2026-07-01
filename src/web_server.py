@@ -23,11 +23,11 @@ from .camera_config import available_camera_ids, camera_id_to_cam_slot, slot_dev
 from .camera_service import CameraService, enumerate_camera_devices
 from .config_store import ConfigStore
 from .display_images import (
-    _hsv_hit_mask,
     build_tool_binary_image,
     first_enabled_tool_cam,
     has_active_tools,
     pick_primary_preview,
+    required_tool_cam_slots,
 )
 from .frame_codec import (
     build_idle_frame,
@@ -40,7 +40,7 @@ from .frame_codec import (
 )
 from .io.modbus_client import ModbusIOService
 from .pipeline import DetectionPipeline
-from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, run_roi_tools, sample_hsv_in_roi
+from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, hsv_hit_mask, run_roi_tools, sample_hsv_in_roi
 from .stats_store import StatsStore
 from .utils import json_safe, setup_logger
 from .version import get_app_meta
@@ -194,6 +194,7 @@ async def lifespan(app: FastAPI):
     yield
     if state._preview_task:
         state._preview_task.cancel()
+    state.stats.flush()
     state.camera.disconnect()
     state.io.disconnect()
 
@@ -451,7 +452,7 @@ async def tools_hsv_match_preview(body: dict):
     h_lower = params.get("h_lower") or body.get("h_lower") or [0, 0, 0]
     h_upper = params.get("h_upper") or body.get("h_upper") or [180, 255, 255]
     tool = {"roi": roi, "params": {"h_lower": h_lower, "h_upper": h_upper}}
-    mask = _hsv_hit_mask(img, tool)
+    mask = hsv_hit_mask(img, tool)
     preview = np.zeros_like(img)
     preview[mask > 0] = img[mask > 0]
     quality = int(state.config_store.get_cached().get("output", {}).get("jpeg_quality", 70))
@@ -464,7 +465,9 @@ async def tools_hsv_match_preview(body: dict):
 
 
 def _trigger_capture_and_detect() -> dict:
-    frames = state.camera.capture_all_for_trigger()
+    cfg = state.config_store.get_cached()
+    slots = required_tool_cam_slots(cfg) if has_active_tools(cfg) else None
+    frames = state.camera.capture_all_for_trigger(slots)
     return state.run_detection(frames)
 
 

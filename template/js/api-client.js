@@ -397,6 +397,10 @@ class RealApiClient {
     this.onConnectionChange(connected);
   }
 
+  _wsConnected() {
+    return Boolean(this._ws && this._ws.readyState === WebSocket.OPEN);
+  }
+
   async post(path, body = {}) {
     const res = await fetch(this._base + path, {
       method: "POST",
@@ -405,7 +409,9 @@ class RealApiClient {
     });
     if (!res.ok) throw new Error(`${path} ${res.status}`);
     const data = await res.json();
-    if (data.type === "frame") this.onFrame(data);
+    // /api/trigger 已通过 WebSocket broadcast；避免 HTTP+WS 双通道重复 onFrame
+    const skipFrame = path === "/api/trigger" && this._wsConnected();
+    if (data.type === "frame" && !skipFrame) this.onFrame(data);
     return data;
   }
 

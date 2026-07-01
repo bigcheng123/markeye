@@ -9,6 +9,7 @@ from typing import Optional, Union
 import numpy as np
 
 from .detector import Detector, MarkResult
+from .display_images import has_active_tools
 from .inspector import InspectionResult, Inspector
 from .preprocessor import Preprocessor
 from .utils import draw_detection, overlay_result
@@ -115,34 +116,36 @@ class DetectionPipeline:
             )
 
         t0 = time.perf_counter()
-        binary = self._preprocessor.process(img)
-        marks = self._detector.detect(binary, img)
-        inspections = self._inspector.inspect(img, marks, self.config)
+        use_tools = has_active_tools(self.config)
         tool_results = run_roi_tools(images if isinstance(images, dict) else img, self.config)
 
-        fail_reasons: list[str] = []
-        for r in inspections:
-            if not r.passed:
-                fail_reasons.extend(r.fail_reasons)
-
-        # 运行结果以 tools 为准；未定义 tools 时回退到原有 inspections
-        if tool_results:
+        if use_tools:
+            marks: list[MarkResult] = []
+            inspections: list[InspectionResult] = []
+            fail_reasons: list[str] = []
             io_cfg = (self.config or {}).get("io") or {}
             all_pass, tool_fail_reasons = aggregate_tool_results(tool_results, io_cfg)
             fail_reasons.extend(tool_fail_reasons)
+            result_img = img.copy()
         else:
+            binary = self._preprocessor.process(img)
+            marks = self._detector.detect(binary, img)
+            inspections = self._inspector.inspect(img, marks, self.config)
+            fail_reasons = []
+            for r in inspections:
+                if not r.passed:
+                    fail_reasons.extend(r.fail_reasons)
             all_pass = bool(inspections) and all(r.passed for r in inspections)
             if not marks:
                 all_pass = False
                 fail_reasons.append("未检测到标记")
-
-        result_img = img.copy()
-        for r in inspections:
-            color = (0, 200, 0) if r.passed else (0, 0, 200)
-            result_img = draw_detection(
-                result_img, r.mark.contour, color, r.mark.label
-            )
-        result_img = overlay_result(result_img, all_pass, fail_reasons)
+            result_img = img.copy()
+            for r in inspections:
+                color = (0, 200, 0) if r.passed else (0, 0, 200)
+                result_img = draw_detection(
+                    result_img, r.mark.contour, color, r.mark.label
+                )
+            result_img = overlay_result(result_img, all_pass, fail_reasons)
 
         elapsed = int((time.perf_counter() - t0) * 1000)
         return PipelineResult(

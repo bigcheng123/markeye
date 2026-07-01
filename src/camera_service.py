@@ -337,8 +337,14 @@ class CameraService:
                 return state.latest_frame.copy()
             return self._capture_fallback_unlocked(slot)
 
-    def capture_all_for_trigger(self) -> dict[int, Optional[np.ndarray]]:
-        return {slot: self.capture_for_trigger(slot) for slot in range(NUM_CAMERA_SLOTS)}
+    def capture_all_for_trigger(self, slots: Optional[set[int]] = None) -> dict[int, Optional[np.ndarray]]:
+        if slots is None:
+            target = set(range(NUM_CAMERA_SLOTS))
+        else:
+            target = {max(0, min(NUM_CAMERA_SLOTS - 1, int(s))) for s in slots}
+            if not target:
+                target = {0}
+        return {slot: self.capture_for_trigger(slot) for slot in sorted(target)}
 
     def capture_frame(self, slot: int = 0) -> Optional[np.ndarray]:
         return self.get_live_frame(slot)

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+PERSIST_EVERY_N_RECORDS = 10
+
 
 @dataclass
 class StatsSnapshot:
@@ -51,6 +53,8 @@ class StatsStore:
     def __init__(self, persist_path: Optional[str] = None):
         self._snap = StatsSnapshot()
         self.persist_path = Path(persist_path) if persist_path else None
+        self._dirty = False
+        self._writes_since_persist = 0
         if self.persist_path and self.persist_path.exists():
             self._load()
 
@@ -69,6 +73,18 @@ class StatsStore:
         self.persist_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        self._dirty = False
+        self._writes_since_persist = 0
+
+    def _maybe_persist(self, *, force: bool = False) -> None:
+        if force or self._writes_since_persist >= PERSIST_EVERY_N_RECORDS:
+            if self._dirty:
+                self._persist()
+
+    def flush(self) -> None:
+        """立即写盘（服务退出或 reset 时调用）。"""
+        if self._dirty:
+            self._persist()
 
     def record_success(self, passed: bool, process_ms: int) -> None:
         self._snap.trigger_total += 1
@@ -77,11 +93,15 @@ class StatsStore:
         else:
             self._snap.ng_count += 1
         self._record_process_ms(process_ms)
-        self._persist()
+        self._dirty = True
+        self._writes_since_persist += 1
+        self._maybe_persist()
 
     def record_trerr(self) -> None:
         self._snap.trerr_count += 1
-        self._persist()
+        self._dirty = True
+        self._writes_since_persist += 1
+        self._maybe_persist()
 
     def _record_process_ms(self, process_ms: int) -> None:
         hist = self._snap._process_history
@@ -94,7 +114,9 @@ class StatsStore:
 
     def reset(self) -> None:
         self._snap = StatsSnapshot()
-        self._persist()
+        self._dirty = True
+        self._writes_since_persist = PERSIST_EVERY_N_RECORDS
+        self._maybe_persist(force=True)
 
     def snapshot(self) -> dict:
         return self._snap.to_dict()

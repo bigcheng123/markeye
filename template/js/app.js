@@ -41,6 +41,7 @@ class MarkEyeApp {
     this._ignoreIdleUntil = 0;
     this._continuousTrigger = false;
     this._continuousTriggerTimer = null;
+    this._lastNgAlertAt = 0;
     this.api = null;
     this._mockCameras = [0, 1, 2];
     this._mockCameraId = 0;
@@ -181,7 +182,12 @@ class MarkEyeApp {
     }
 
     if (data.overall?.passed === false && !data.idle && !data.no_tools) {
-      playNgAlert();
+      const now = performance.now();
+      const ngGap = this._continuousTrigger ? 500 : 0;
+      if (now - this._lastNgAlertAt >= ngGap) {
+        this._lastNgAlertAt = now;
+        playNgAlert();
+      }
     }
     this.statusBar.update(data);
     // 工具预览激活时：保持主画面显示工具对应图像，不被实时帧覆盖
@@ -910,7 +916,7 @@ class MarkEyeApp {
     this._ignoreIdleUntil = performance.now() + 700;
     const frame = await this.api.trigger();
     if (frame) {
-      // post() 已调用 onFrame；此处仅补 toast（避免重复处理）
+      // WebSocket 推送 onFrame；WS 断连时 post() 会 fallback 调用 onFrame
       if (!silent && !frame.idle && frame.overall?.passed != null) {
         showToast(`触发完成 — ${frame.overall.passed ? "OK" : "NG"}`, frame.overall.passed ? "ok" : "err");
       }
@@ -956,15 +962,20 @@ class MarkEyeApp {
 
   async _continuousTriggerStep() {
     if (!this._continuousTrigger) return;
+    const stepStart = performance.now();
+    let frame = null;
     try {
-      await this._doTrigger({ silent: true });
+      frame = await this._doTrigger({ silent: true });
     } catch {
       this._stopContinuousTrigger();
       showToast("连续触发已停止（触发失败）", "err");
       return;
     }
     if (!this._continuousTrigger) return;
-    this._continuousTriggerTimer = setTimeout(() => this._continuousTriggerStep(), 50);
+    const processMs = frame?.frame?.process_ms ?? 0;
+    const elapsed = performance.now() - stepStart;
+    const delay = Math.max(50, processMs + 20, Math.round(elapsed * 0.5));
+    this._continuousTriggerTimer = setTimeout(() => this._continuousTriggerStep(), delay);
   }
 
   _bindKeyboard() {
