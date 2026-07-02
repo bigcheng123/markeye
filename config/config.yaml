@@ -2,10 +2,13 @@ input:
   cameras:
   - 0
   - 1
-  camera_id: 1
+  - 2
+  camera_id: 0
   fallback_image: ui/ui_sample/target.PNG
   exposure: 50
   gain: 1
+  camera_reconnect_interval_s: 5
+  camera_connect_retries: 3
 preprocess:
   resize_width: 1280
   resize_height: null
@@ -187,14 +190,16 @@ io:
     delay_ms: 0
   trerr_enabled: true
   transport: rtu
-  serial_port: COM4
+  serial_port: /dev/ttyUSB0
   poll_interval_ms: 50
   reconnect_interval_s: 3
+  connect_retries: 3
+  connect_retry_delay_s: 1.0
   output_assignments:
   - link_ok
   - result_ng
-  - tool:01
-  - tool:02
+  - 'off'
+  - 'off'
   - 'off'
   - 'off'
   - 'off'
