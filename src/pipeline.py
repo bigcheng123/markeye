@@ -34,22 +34,27 @@ def aggregate_tool_results(
     fail_reasons: list[str] = []
     passed_flags = [bool(t.get("passed")) for t in tool_results]
 
-    if logic in (1, 2):
-        # 逻辑 1/2：全部工具 OK 时综合 OK；任一 NG 则综合 NG
+    if logic == 1:
+        # 全部OK：所有工具 OK 时综合 OK
         all_pass = all(passed_flags)
-    elif logic == 3:
-        # 逻辑 3（占位）：任一工具 OK 即综合 OK
+    elif logic == 2:
+        # 任一OK：至少一个工具 OK 时综合 OK
         all_pass = any(passed_flags)
-    elif logic == 4:
-        # 逻辑 4（占位）：与逻辑 1 相同，待 UI 规范后调整
-        all_pass = all(passed_flags)
+    elif logic == 3:
+        # 全部NG：所有工具 NG 时综合 OK
+        all_pass = bool(passed_flags) and not any(passed_flags)
     else:
         all_pass = all(passed_flags)
 
     if not all_pass:
-        for t in tool_results:
-            if not t.get("passed"):
-                fail_reasons.extend(t.get("fail_reasons", []) or [])
+        if logic == 3:
+            for t in tool_results:
+                if t.get("passed"):
+                    fail_reasons.extend(t.get("fail_reasons", []) or [])
+        else:
+            for t in tool_results:
+                if not t.get("passed"):
+                    fail_reasons.extend(t.get("fail_reasons", []) or [])
 
     return all_pass, fail_reasons
 

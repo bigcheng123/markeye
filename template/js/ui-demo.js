@@ -140,7 +140,6 @@ export async function runUiDemo(app) {
       document.querySelector(`.wizard-tab[data-tab="${t}"]`)?.click();
       await delay(250);
     }
-    document.querySelector('[data-action="logic"][data-n="1"]')?.click();
     await delay(300);
   });
 

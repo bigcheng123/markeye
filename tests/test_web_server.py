@@ -61,8 +61,20 @@ def test_io_status_endpoint(client):
     assert "transport" in data
     assert "input_bits" in data
     assert "output_bits" in data
+    assert "run_mode_enabled" in data
     assert len(data["input_bits"]) == 8
     assert len(data["output_bits"]) == 8
+
+
+def test_io_run_mode_endpoint(client):
+    res = client.post("/api/io/run-mode", json={"enabled": False})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["run_mode_enabled"] is False
+    res2 = client.get("/api/io/status")
+    assert res2.json()["run_mode_enabled"] is False
+    res3 = client.post("/api/io/run-mode", json={"enabled": True})
+    assert res3.json()["run_mode_enabled"] is True
 
 
 def test_io_reconnect_when_disabled(client):

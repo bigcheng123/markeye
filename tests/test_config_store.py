@@ -99,10 +99,29 @@ def test_save_wizard_step3_rejects_missing_master_for_cam(store, tmp_path):
         store.save_wizard_step(3, {"tools": tools})
 
 
-def test_save_wizard_step4_comprehensive_logic(store):
+def test_get_wizard_step4_includes_tools(store):
+    tools = [
+        {"id": "01", "name": "色彩识别", "type": "hsv_roi", "enabled": True, "cam": 0},
+        {"id": "02", "name": "轮廓识别", "type": "contour_roi", "enabled": True, "cam": 0},
+    ]
+    store.save(
+        {
+            "tools": tools,
+            "io": {
+                "output_assignments": ["link_ok", "tool:99", "off", "off", "off", "off", "off", "off"]
+            },
+        }
+    )
+    data = store.get_wizard_step(4)
+    assert data["tools"] == tools
+    assert data["io"]["output_assignments"][1] == "off"
     store.save({"io": {"comprehensive_logic": 1}})
-    cfg = store.save_wizard_step(4, {"io": {"comprehensive_logic": 2, "trerr_enabled": False}})
+    cfg = store.save_wizard_step(
+        4,
+        {"io": {"comprehensive_logic": 2, "comprehensive_logic_v2": True, "trerr_enabled": False}},
+    )
     assert cfg["io"]["comprehensive_logic"] == 2
+    assert cfg["io"]["comprehensive_logic_v2"] is True
     assert cfg["io"]["trerr_enabled"] is False
 
 

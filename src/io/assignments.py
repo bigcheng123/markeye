@@ -66,7 +66,7 @@ def build_output_states(
     tool_map = _tool_passed_map(tool_results)
 
     for i, role in enumerate(_pad_assignments(output_assignments)):
-        if role in ("off", "link_ok"):
+        if role in ("off", "link_ok", "running"):
             continue
         if role == "result_ng":
             states[i] = not passed
@@ -115,7 +115,35 @@ def _migrate_input_assignments(io: dict) -> list[str]:
     return list(DEFAULT_INPUT_ASSIGNMENTS)
 
 
-def normalize_io_assignments(io: dict | None) -> dict:
+def _valid_tool_ids(tools: list | None) -> set[str]:
+    out: set[str] = set()
+    for item in tools or []:
+        if not isinstance(item, dict):
+            continue
+        tool_id = item.get("id")
+        if tool_id is not None and str(tool_id).strip():
+            out.add(str(tool_id))
+    return out
+
+
+def _sanitize_tool_output_assignments(
+    output_assignments: list[str], tools: list | None
+) -> list[str]:
+    """移除已删除工具的 OUT 分配（tool:XX → off）。"""
+    valid = _valid_tool_ids(tools)
+    if not valid:
+        return output_assignments
+    sanitized: list[str] = []
+    for role in output_assignments:
+        if role.startswith("tool:"):
+            tool_id = role.split(":", 1)[1]
+            sanitized.append(role if tool_id in valid else "off")
+        else:
+            sanitized.append(role)
+    return sanitized
+
+
+def normalize_io_assignments(io: dict | None, *, tools: list | None = None) -> dict:
     """补齐 8 路分配表，并同步 outputs/inputs 兼容字段。"""
     io = dict(io or {})
 
@@ -126,6 +154,8 @@ def normalize_io_assignments(io: dict | None) -> dict:
         output_assignments = _pad_assignments(raw_out)
     else:
         output_assignments = _migrate_output_assignments(io)
+
+    output_assignments = _sanitize_tool_output_assignments(output_assignments, tools)
 
     if raw_in:
         input_assignments = _pad_assignments(raw_in)
@@ -145,4 +175,30 @@ def normalize_io_assignments(io: dict | None) -> dict:
     outputs["result_ng"] = resolve_output_index(output_assignments, "result_ng")
     inputs["trigger_bits"] = resolve_trigger_bits(input_assignments)
 
+    io["comprehensive_logic"] = _normalize_comprehensive_logic(
+        io.get("comprehensive_logic"),
+        schema_v2=bool(io.get("comprehensive_logic_v2")),
+    )
+    if not io.get("comprehensive_logic_v2"):
+        io["comprehensive_logic_v2"] = True
+
     return io
+
+
+_LEGACY_COMPREHENSIVE_LOGIC = {2: 1, 3: 2, 4: 1}
+
+
+def _normalize_comprehensive_logic(value, *, schema_v2: bool) -> int:
+    """规范化综合判定 OK 条件；旧版配置一次性迁移至 1~3。"""
+    try:
+        logic = int(value)
+    except (TypeError, ValueError):
+        return 1
+    if schema_v2:
+        if logic in (1, 2, 3):
+            return logic
+        return 1
+    migrated = _LEGACY_COMPREHENSIVE_LOGIC.get(logic, logic)
+    if migrated in (1, 2, 3):
+        return migrated
+    return 1

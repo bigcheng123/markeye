@@ -87,13 +87,42 @@ class TestAggregateToolResults:
         assert ok is False
         assert "面积不足" in reasons
 
-    def test_logic3_any_pass(self):
+    def test_logic2_any_pass(self):
         results = [
             {"passed": False, "fail_reasons": ["a"]},
             {"passed": True},
         ]
-        ok, _ = aggregate_tool_results(results, {"comprehensive_logic": 3})
+        ok, reasons = aggregate_tool_results(results, {"comprehensive_logic": 2})
         assert ok is True
+        assert reasons == []
+
+    def test_logic2_none_pass(self):
+        results = [
+            {"passed": False, "fail_reasons": ["a"]},
+            {"passed": False, "fail_reasons": ["b"]},
+        ]
+        ok, reasons = aggregate_tool_results(results, {"comprehensive_logic": 2})
+        assert ok is False
+        assert "a" in reasons
+        assert "b" in reasons
+
+    def test_logic3_all_ng_pass(self):
+        results = [
+            {"passed": False, "fail_reasons": ["a"]},
+            {"passed": False, "fail_reasons": ["b"]},
+        ]
+        ok, reasons = aggregate_tool_results(results, {"comprehensive_logic": 3})
+        assert ok is True
+        assert reasons == []
+
+    def test_logic3_one_ok_fails(self):
+        results = [
+            {"passed": False, "fail_reasons": ["a"]},
+            {"passed": True},
+        ]
+        ok, reasons = aggregate_tool_results(results, {"comprehensive_logic": 3})
+        assert ok is False
+        assert reasons == []
 
 
 class TestDetectionPipeline:

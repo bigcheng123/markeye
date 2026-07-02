@@ -55,6 +55,7 @@ const IO_CHANNEL_COUNT = 8;
 const IO_OUT_STATIC_OPTIONS = [
   { value: "off", label: "OFF" },
   { value: "link_ok", label: "通信成功" },
+  { value: "running", label: "运行中" },
   { value: "result_ok", label: "综合判断OK" },
   { value: "result_ng", label: "综合判断NG" },
 ];
@@ -164,11 +165,47 @@ function _renderArchivePanel(output) {
 }
 
 function _ioOutOptions(tools) {
-  const toolOpts = (tools || []).map((t) => ({
-    value: `tool:${t.id}`,
-    label: `工具${t.id}: ${t.name || _toolNameFromKind(_toolKindFromSel(t))}`,
-  }));
+  const toolOpts = (tools || []).map((t) => {
+    const kindLabel = t.name || _toolNameFromKind(_toolKindFromSel(t));
+    const disabledSuffix = t.enabled === false ? " (禁用)" : "";
+    return {
+      value: `tool:${t.id}`,
+      label: `工具${t.id}: ${kindLabel}${disabledSuffix}`,
+    };
+  });
   return [...IO_OUT_STATIC_OPTIONS, ...toolOpts];
+}
+
+function _sanitizeOutputAssignments(assignments, tools) {
+  const valid = new Set((tools || []).map((t) => `tool:${t.id}`));
+  return (assignments || []).map((role) => {
+    if (typeof role === "string" && role.startsWith("tool:") && !valid.has(role)) {
+      return "off";
+    }
+    return role || "off";
+  });
+}
+
+function _updateOutAssignSelects(root, tools, assignments) {
+  if (!root) return;
+  const outOpts = _ioOutOptions(tools);
+  for (let i = 0; i < IO_CHANNEL_COUNT; i++) {
+    const sel = root.querySelector(`[data-field="out-assign-${i}"]`);
+    if (!sel) continue;
+    const current = assignments[i] || "off";
+    const known = new Set(outOpts.map((o) => o.value));
+    const extra =
+      current && current !== "off" && !known.has(current)
+        ? `<option value="${current}" selected>${current}</option>`
+        : "";
+    sel.innerHTML =
+      outOpts
+        .map(
+          (o) =>
+            `<option value="${o.value}"${o.value === current ? " selected" : ""}>${o.label}</option>`,
+        )
+        .join("") + extra;
+  }
 }
 
 function _renderIoSelect(field, options, current, label) {
@@ -574,8 +611,13 @@ export class Wizard {
   }
 
   goToStep(step) {
+    const fromStep = this.step;
     if (this.step === 3 && step !== 3) {
       this._readToolEditor();
+      this._renumberToolIds();
+    }
+    if (step === 4 && fromStep === 3) {
+      this._outputAssignments = _sanitizeOutputAssignments(this._outputAssignments, this._tools);
     }
     if (step !== 3 && this._hsvMatchPreviewActive) {
       this._clearHsvMatchPreview();
@@ -820,8 +862,6 @@ export class Wizard {
   _renderStep4(meta) {
     const logic = this._comprehensiveLogic ?? 1;
     const trerrOn = this._trerrEnabled !== false;
-    const logicBtnClass = (n) =>
-      `btn btn-secondary${logic === n ? " is-active" : ""}`;
     const io = this._ioConfig || {};
     const transport = io.transport || "rtu";
     const ioEnabled = io.enabled === true;
@@ -877,18 +917,18 @@ export class Wizard {
         </div>
       </div>
       <div class="wizard-tab-panel ${this.tab === "logic" ? "is-active" : ""}" data-panel="logic">
-        <div class="wizard-form-row"><label>综合判断条件</label>
+        <div class="wizard-form-row"><label>综合判定OK条件(工具）</label>
           <select data-field="comprehensive-condition">
             <option value="1" ${logic === 1 ? "selected" : ""}>全部OK</option>
-            <option value="2" ${logic === 2 ? "selected" : ""}>任一NG</option>
+            <option value="2" ${logic === 2 ? "selected" : ""}>任一OK</option>
+            <option value="3" ${logic === 3 ? "selected" : ""}>全部NG</option>
           </select>
         </div>
         <p>定义逻辑判断条件：</p>
         <div class="wizard-logic-btns">
-          <button type="button" class="${logicBtnClass(1)}" data-action="logic" data-n="1">逻辑 1</button>
-          <button type="button" class="${logicBtnClass(2)}" data-action="logic" data-n="2">逻辑 2</button>
-          <button type="button" class="${logicBtnClass(3)}" data-action="logic" data-n="3">逻辑 3</button>
-          <button type="button" class="${logicBtnClass(4)}" data-action="logic" data-n="4">逻辑 4</button>
+          <button type="button" class="btn btn-secondary" data-reserved="logic" disabled title="预留功能">逻辑 1</button>
+          <button type="button" class="btn btn-secondary" data-reserved="logic" disabled title="预留功能">逻辑 2</button>
+          <button type="button" class="btn btn-secondary" data-reserved="logic" disabled title="预留功能">逻辑 3</button>
         </div>
       </div>
       <div class="wizard-tab-panel ${this.tab === "autoswitch" ? "is-active" : ""}" data-panel="autoswitch">
@@ -1046,19 +1086,9 @@ export class Wizard {
     if (this.step === 4) {
       this.contentEl?.querySelector('[data-field="comprehensive-condition"]')?.addEventListener("change", (e) => {
         const n = parseInt(e.target.value, 10);
-        if (Number.isFinite(n)) {
+        if (Number.isFinite(n) && n >= 1 && n <= 3) {
           this._comprehensiveLogic = n;
-          this._updateComprehensiveLogicUI();
         }
-      });
-      this.contentEl?.querySelectorAll('[data-action="logic"]').forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const n = parseInt(btn.dataset.n, 10);
-          if (Number.isFinite(n)) {
-            this._comprehensiveLogic = n;
-            this._updateComprehensiveLogicUI();
-          }
-        });
       });
       this.contentEl?.querySelector('[data-field="io-transport"]')?.addEventListener("change", (e) => {
         this._ioConfig = { ...this._ioConfig, transport: e.target.value };
@@ -1530,24 +1560,89 @@ export class Wizard {
     }
   }
 
-  async _hydrateStep4() {
-    if (isMockMode()) {
-      this._comprehensiveLogic = 1;
-      this._trerrEnabled = true;
-      this._ioConnected = true;
-      return;
-    }
-    if (!this._tools.length) {
-      try {
-        const t3 = await window.__markeyeApp?.api?.get?.("/api/wizard/step/3");
-        if (Array.isArray(t3?.tools)) this._tools = t3.tools;
-      } catch {
-        /* ignore */
-      }
-    }
-    if (this._step4Loaded) return;
+  async _fetchToolsForStep4() {
+    if (this._tools.length) return false;
     try {
       const data = await window.__markeyeApp?.api?.get?.("/api/wizard/step/4");
+      if (Array.isArray(data?.tools) && data.tools.length) {
+        this._tools = data.tools;
+        this._renumberToolIds();
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const t3 = await window.__markeyeApp?.api?.get?.("/api/wizard/step/3");
+      if (Array.isArray(t3?.tools)) {
+        this._tools = t3.tools;
+        this._renumberToolIds();
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+
+  _ensureMockToolsForStep4() {
+    if (this._tools.length) return;
+    this._tools = [
+      {
+        name: "色彩识别",
+        type: "hsv_roi",
+        enabled: true,
+        roi: { shape: "rect", x: 100, y: 100, w: 120, h: 80 },
+        params: { h_lower: [0, 50, 50], h_upper: [180, 255, 255] },
+      },
+      {
+        name: "轮廓识别",
+        type: "contour_roi",
+        enabled: true,
+        roi: { shape: "rect", x: 260, y: 120, w: 180, h: 140 },
+        params: {
+          target_shape: "rect",
+          size_tolerance: 0.15,
+          position_tolerance: 10,
+          expected: { center: [350, 190], size: [120, 80] },
+        },
+      },
+    ];
+    this._renumberToolIds();
+  }
+
+  _refreshStep4OutOptions() {
+    if (this.step !== 4) return;
+    this._outputAssignments = _sanitizeOutputAssignments(this._outputAssignments, this._tools);
+    _updateOutAssignSelects(this.contentEl, this._tools, this._outputAssignments);
+  }
+
+  async _hydrateStep4() {
+    if (isMockMode()) {
+      this._ensureMockToolsForStep4();
+      if (!this._step4Loaded) {
+        this._comprehensiveLogic = 1;
+        this._trerrEnabled = true;
+        this._ioConnected = true;
+        this._step4Loaded = true;
+      }
+      this._refreshStep4OutOptions();
+      return;
+    }
+
+    await this._fetchToolsForStep4();
+
+    if (this._step4Loaded) {
+      this._refreshStep4OutOptions();
+      return;
+    }
+
+    try {
+      const data = await window.__markeyeApp?.api?.get?.("/api/wizard/step/4");
+      if (Array.isArray(data?.tools) && !this._tools.length) {
+        this._tools = data.tools;
+        this._renumberToolIds();
+      }
       const io = data?.io || {};
       this._ioConfig = io;
       if (Array.isArray(io.output_assignments) && io.output_assignments.length) {
@@ -1565,16 +1660,18 @@ export class Wizard {
         }
       }
       const logic = parseInt(io.comprehensive_logic, 10);
-      this._comprehensiveLogic = Number.isFinite(logic) && logic >= 1 && logic <= 4 ? logic : 1;
+      this._comprehensiveLogic = Number.isFinite(logic) && logic >= 1 && logic <= 3 ? logic : 1;
       this._trerrEnabled = io.trerr_enabled !== false;
       if (data?.output) {
         this._outputConfig = _normalizeOutputConfig(data.output);
       }
+      this._outputAssignments = _sanitizeOutputAssignments(this._outputAssignments, this._tools);
       this._step4Loaded = true;
       if (this.step === 4) this._render();
     } catch {
       this._comprehensiveLogic = 1;
       this._trerrEnabled = true;
+      this._refreshStep4OutOptions();
     }
   }
 
@@ -1587,16 +1684,6 @@ export class Wizard {
       p.classList.toggle("is-active", p.dataset.panel === this.tab);
     });
     this._syncIoPoll();
-  }
-
-  _updateComprehensiveLogicUI() {
-    const logic = this._comprehensiveLogic ?? 1;
-    const condSel = this.contentEl?.querySelector('[data-field="comprehensive-condition"]');
-    if (condSel) condSel.value = String(logic <= 2 ? logic : 1);
-    this.contentEl?.querySelectorAll('[data-action="logic"]').forEach((btn) => {
-      const n = parseInt(btn.dataset.n, 10);
-      btn.classList.toggle("is-active", n === logic);
-    });
   }
 
   _updateIoTransportFields(transport) {
@@ -2161,7 +2248,8 @@ export class Wizard {
       const trerrOn = el?.querySelector('[data-toggle="trerr"] .is-active')?.dataset?.val === "on";
       const condSel = el?.querySelector('[data-field="comprehensive-condition"]');
       const condLogic = condSel ? parseInt(condSel.value, 10) : NaN;
-      const logic = Number.isFinite(condLogic) ? condLogic : (this._comprehensiveLogic ?? 1);
+      const rawLogic = Number.isFinite(condLogic) ? condLogic : (this._comprehensiveLogic ?? 1);
+      const logic = rawLogic >= 1 && rawLogic <= 3 ? rawLogic : 1;
       this._comprehensiveLogic = logic;
 
       const outputAssignments = Array.from({ length: IO_CHANNEL_COUNT }, (_, i) => {
@@ -2200,6 +2288,7 @@ export class Wizard {
         input_assignments: inputAssignments,
         trerr_enabled: trerrOn,
         comprehensive_logic: logic,
+        comprehensive_logic_v2: true,
         host,
         port: Number.isFinite(port) ? port : 502,
       };

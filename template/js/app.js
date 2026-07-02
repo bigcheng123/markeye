@@ -75,6 +75,15 @@ class MarkEyeApp {
     initLayout();
   }
 
+  async _syncRunModeIo(enabled) {
+    if (isMockMode()) return;
+    try {
+      await this.api?.post?.("/api/io/run-mode", { enabled: !!enabled });
+    } catch {
+      /* ignore */
+    }
+  }
+
   _setModbusStatus({ state = "unknown", text = "MODBUS: —", title = "" } = {}) {
     const el = this._modbusStatusEl;
     if (!el) return;
@@ -186,6 +195,7 @@ class MarkEyeApp {
     showConnectionBanner(false);
     this.api = new ApiClient({
       onFrame: (data) => this._onFrame(data),
+      onProfileSwitch: (data) => void this._onIoProfileSwitch(data),
       onConnectionChange: (connected) => {
         const needsLiveStream =
           this.view === "run" ||
@@ -203,6 +213,7 @@ class MarkEyeApp {
         }
       },
     });
+    this.api.start();
     this._loadProfiles();
     this._loadDeviceStatus();
     this._setView("run");
@@ -448,6 +459,7 @@ class MarkEyeApp {
     this.view = view;
     setAppView(view === "wizard" ? "wizard" : view === "set" ? "set" : "run");
     updateModeTabIcons(view);
+    void this._syncRunModeIo(view === "run");
 
     if (view !== "run") {
       this._stopContinuousTrigger();
@@ -884,14 +896,16 @@ class MarkEyeApp {
     return document.querySelector("#config-profile")?.value || "config.yaml";
   }
 
-  async _switchProfile(name) {
-    const prev = this._getActiveProfileName();
-    if (name === prev) return;
-
-    await this.api.post("/api/config/switch", { name });
-
+  async _applyProfileSwitchUi(name, { toast = false } = {}) {
+    if (!name) return;
+    await this._loadProfiles();
+    const sel = document.querySelector("#config-profile");
+    if (sel) sel.value = name;
+    if (toast) {
+      const label = sel?.selectedOptions?.[0]?.textContent || name;
+      showToast(`已切换程序: ${label}`, "ok");
+    }
     await this.syncCameraSelect();
-
     if (this.view === "wizard") {
       const step = this.wizard.step;
       this.hasMasterRegistered = false;
@@ -902,7 +916,23 @@ class MarkEyeApp {
       this.wizard.reloadForProfile(step);
       await this.loadMasterThumbnails();
       await this._onWizardStepChange(step);
-    } else if (this.view === "run" && isMockMode()) {
+    }
+  }
+
+  async _onIoProfileSwitch(data) {
+    const name = data?.active;
+    if (!name) return;
+    await this._applyProfileSwitchUi(name, { toast: true });
+  }
+
+  async _switchProfile(name) {
+    const prev = this._getActiveProfileName();
+    if (name === prev) return;
+
+    await this.api.post("/api/config/switch", { name });
+    await this._applyProfileSwitchUi(name);
+
+    if (this.view === "run" && isMockMode()) {
       this._onFrame(createIdleFrame());
     }
   }

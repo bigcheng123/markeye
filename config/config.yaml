@@ -114,7 +114,7 @@ tools:
   enabled: true
   roi:
     shape: rect
-    x: 400
+    x: 414
     y: 350
     w: 60
     h: 40
@@ -124,18 +124,18 @@ tools:
   params:
     h_lower:
     - 20
-    - 49
-    - 100
+    - 150
+    - 200
     h_upper:
     - 66
+    - 220
     - 255
-    - 200
-    match_area_max: 500
+    match_area_max: 2000
     match_area_min: 180
     h_sample:
-    - 34
-    - 255
-    - 157
+    - 22
+    - 185
+    - 241
   name: 色彩识别
 - name: 色彩识别
   type: hsv_roi
@@ -152,19 +152,19 @@ tools:
     r: 10
   params:
     h_lower:
-    - 50
-    - 100
-    - 100
+    - 89
+    - 0
+    - 44
     h_upper:
-    - 180
-    - 255
-    - 255
+    - 120
+    - 80
+    - 227
     match_area_max: 8000
     match_area_min: 2000
     h_sample:
-    - 63
-    - 100
-    - 243
+    - 98
+    - 23
+    - 133
   id: '02'
 io:
   enabled: true
@@ -198,16 +198,16 @@ io:
   - 'off'
   - 'off'
   - 'off'
-  - 'off'
+  - running
   input_assignments:
   - trigger
   - trigger
-  - trigger
-  - 'off'
-  - 'off'
-  - 'off'
-  - 'off'
-  - 'off'
+  - switch_program
+  - switch_program
+  - switch_program
+  - switch_program
+  - switch_program
+  - switch_program
   baudrate: 38400
   bytesize: 8
   parity: N
@@ -217,7 +217,7 @@ io:
     trigger_bits:
     - 0
     - 1
-    - 2
+  comprehensive_logic_v2: true
 output:
   save_result: false
   save_policy: ng

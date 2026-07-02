@@ -77,6 +77,19 @@ class AppState:
         self._io_poll_task: Optional[asyncio.Task] = None
         self._preview_paused_until: float = 0.0
         self._last_frame_payload: dict = self.build_idle_payload()
+        self.run_mode_enabled: bool = True
+
+    async def apply_run_mode(self, enabled: bool) -> dict:
+        """同步运行模式到 OUT「运行中」分配。"""
+        self.run_mode_enabled = bool(enabled)
+        await asyncio.to_thread(self.io.set_running, self.run_mode_enabled)
+        payload = self.io.status()
+        payload.update(await asyncio.to_thread(self.io.get_channel_states))
+        payload["run_mode_enabled"] = self.run_mode_enabled
+        return payload
+
+    async def _sync_running_output(self) -> None:
+        await asyncio.to_thread(self.io.set_running, self.run_mode_enabled)
 
     def _ensure_io_poll_task(self) -> None:
         if self._io_poll_task and not self._io_poll_task.done():
@@ -104,6 +117,7 @@ class AppState:
 
         if enabled:
             ok = await asyncio.to_thread(self.io.connect)
+            await self._sync_running_output()
             self._ensure_io_poll_task()
         else:
             await self._stop_io_poll_task()
@@ -218,6 +232,11 @@ class AppState:
     async def broadcast(self, payload: dict) -> None:
         safe = json_safe(payload)
         self._last_frame_payload = safe
+        await self.notify_clients(safe)
+
+    async def notify_clients(self, payload: dict) -> None:
+        """向 WebSocket 客户端推送消息（不覆盖最后一帧缓存）。"""
+        safe = json_safe(payload)
         dead = []
         for ws in self.ws_clients:
             try:
@@ -297,6 +316,7 @@ async def _startup_hardware() -> None:
         await asyncio.to_thread(state.camera.connect)
         if state.io.enabled:
             await asyncio.to_thread(state.io.connect)
+            await state._sync_running_output()
         state._last_frame_payload = json_safe(
             await asyncio.to_thread(state.build_idle_payload)
         )
@@ -378,6 +398,17 @@ async def root():
     return {"service": "MarkEye", "health": "/api/health"}
 
 
+async def _notify_profile_switch(name: str) -> None:
+    """通知前端同步「选择程序」下拉框。"""
+    await state.notify_clients(
+        {
+            "type": "profile_switch",
+            "active": name,
+            "profiles": state.config_store.list_profiles(),
+        }
+    )
+
+
 async def _handle_io_switch_program() -> None:
     """IN 切换程序：auto_switch 启用时按配置切换，否则轮换下一配方。"""
     cfg = state.config_store.get_cached()
@@ -404,8 +435,15 @@ async def _handle_io_switch_program() -> None:
         try:
             await asyncio.to_thread(state.switch_profile, target_name)
             logger.info("IO: 已切换程序 → %s", target_name)
+            if state.io.enabled:
+                await asyncio.to_thread(state.io.connect)
+            await _notify_profile_switch(target_name)
+            frame = await asyncio.to_thread(state.build_idle_payload)
+            await state.broadcast(frame)
         except FileNotFoundError as exc:
             logger.warning("IO: 切换程序失败: %s", exc)
+    elif target_name == state.config_store._active:
+        logger.info("IO: 切换程序 — 仅一个配方或已是目标配方，跳过")
 
 
 async def _schedule_restart() -> None:
@@ -513,7 +551,18 @@ async def io_status():
     """Modbus IO 连接与分配状态（供 UI / 联调监控）。"""
     payload = state.io.status()
     payload.update(await asyncio.to_thread(state.io.get_channel_states))
+    payload["run_mode_enabled"] = state.run_mode_enabled
     return payload
+
+
+class IoRunModeBody(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/io/run-mode")
+async def io_run_mode(body: IoRunModeBody):
+    """同步 UI 运行/设定模式到 OUT「运行中」分配。"""
+    return await state.apply_run_mode(bool(body.enabled))
 
 
 class IoTestOutputBody(BaseModel):
@@ -537,6 +586,7 @@ async def io_reconnect():
     if not state.io.enabled:
         return {"ok": False, "error": "IO 未启用", **state.io.status()}
     ok = await asyncio.to_thread(state.io.connect)
+    await state._sync_running_output()
     payload = state.io.status()
     payload.update(await asyncio.to_thread(state.io.get_channel_states))
     payload["ok"] = ok

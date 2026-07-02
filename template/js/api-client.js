@@ -31,6 +31,7 @@ class MockApiClient {
   constructor(handlers) {
     this.onFrame = handlers.onFrame;
     this.onConnectionChange = handlers.onConnectionChange || (() => {});
+    this.onProfileSwitch = handlers.onProfileSwitch || (() => {});
     this._connected = false;
     this._liveTimer = null;
     this._activeProfile = "config.yaml";
@@ -44,6 +45,7 @@ class MockApiClient {
     this._mockIo = {
       enabled: false,
       connected: false,
+      run_mode_enabled: true,
       inputs: Array(8).fill(false),
       outputs: Array(8).fill(false),
     };
@@ -99,6 +101,7 @@ class MockApiClient {
       transport: "rtu",
       unit_id: 1,
       busy: false,
+      run_mode_enabled: this._mockIo.run_mode_enabled,
       input_bits: [...this._mockIo.inputs],
       output_bits: [...this._mockIo.outputs],
       output_assignments: [],
@@ -260,6 +263,15 @@ class MockApiClient {
       this._mockIo.connected = this._mockIo.enabled;
       return { ok: true, connected: this._mockIo.connected, ...this._mockIoStatus() };
     }
+    if (path === "/api/io/run-mode") {
+      this._mockIo.run_mode_enabled = body?.enabled === true;
+      const runningIdx = (this._wizardData[`${this._activeProfile}:step4`]?.io?.output_assignments || [])
+        .findIndex((role) => role === "running");
+      if (runningIdx >= 0) {
+        this._mockIo.outputs[runningIdx] = this._mockIo.run_mode_enabled;
+      }
+      return { ok: true, run_mode_enabled: this._mockIo.run_mode_enabled, ...this._mockIoStatus() };
+    }
     if (path === "/api/io/test/output") {
       const ch = Math.max(0, Math.min(7, parseInt(body?.channel, 10) || 0));
       this._mockIo.outputs[ch] = !!body?.value;
@@ -331,28 +343,38 @@ class MockApiClient {
     if (wm) {
       const key = `${this._activeProfile}:step${wm[1]}`;
       const stored = this._wizardData[key] || {};
-      if (wm[1] === "4" && !stored.output) {
-        return {
-          ...stored,
-          io: stored.io || {
-            enabled: false,
-            transport: "rtu",
-            comprehensive_logic: 1,
-            trerr_enabled: true,
-            output_assignments: ["link_ok", "result_ng", "off", "off", "off", "off", "off", "off"],
-            input_assignments: ["trigger", "off", "off", "off", "off", "off", "off", "off"],
-          },
-          output: {
-            save_policy: "none",
-            history: {
+      if (wm[1] === "4") {
+        const step3 = this._wizardData[`${this._activeProfile}:step3`] || {};
+        const tools = Array.isArray(stored.tools)
+          ? stored.tools
+          : Array.isArray(step3.tools)
+            ? step3.tools
+            : [];
+        if (!stored.output) {
+          return {
+            ...stored,
+            tools,
+            io: stored.io || {
               enabled: false,
-              format: "csv",
-              dir: "output/history/",
-              flush_on_profile_switch: true,
-              flush_on_idle_minutes: 50,
+              transport: "rtu",
+              comprehensive_logic: 1,
+              trerr_enabled: true,
+              output_assignments: ["link_ok", "result_ng", "off", "off", "off", "off", "off", "off"],
+              input_assignments: ["trigger", "off", "off", "off", "off", "off", "off", "off"],
             },
-          },
-        };
+            output: {
+              save_policy: "none",
+              history: {
+                enabled: false,
+                format: "csv",
+                dir: "output/history/",
+                flush_on_profile_switch: true,
+                flush_on_idle_minutes: 50,
+              },
+            },
+          };
+        }
+        return { ...stored, tools };
       }
       return stored;
     }
@@ -444,6 +466,7 @@ class RealApiClient {
   constructor(handlers) {
     this.onFrame = handlers.onFrame;
     this.onConnectionChange = handlers.onConnectionChange || (() => {});
+    this.onProfileSwitch = handlers.onProfileSwitch || (() => {});
     this._base = apiBase();
     this._ws = null;
     this._connected = false;
@@ -500,7 +523,8 @@ class RealApiClient {
       this._ws.onmessage = (ev) => {
         try {
           const data = JSON.parse(ev.data);
-          if (data.type === "frame") this.onFrame(data);
+          if (data.type === "profile_switch") this.onProfileSwitch(data);
+          else if (data.type === "frame") this.onFrame(data);
         } catch (err) {
           console.warn("WebSocket frame parse error", err);
         }
@@ -605,6 +629,7 @@ export class ApiClient {
       : new RealApiClient(handlers);
     this.onFrame = handlers.onFrame;
     this.onConnectionChange = handlers.onConnectionChange;
+    this.onProfileSwitch = handlers.onProfileSwitch || (() => {});
   }
 
   get _connected() {

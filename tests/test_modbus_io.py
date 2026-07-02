@@ -127,6 +127,52 @@ def test_write_result_ng_writes_y2_on(mock_client):
     mock_client.write_coil.assert_called_with(1, True, device_id=1)
 
 
+def test_set_running_writes_assigned_coil(mock_client):
+    svc = ModbusIOService(
+        _rtu_config(
+            output_assignments=[
+                "link_ok",
+                "running",
+                "result_ng",
+                "off",
+                "off",
+                "off",
+                "off",
+                "off",
+            ]
+        )
+    )
+    svc.connect()
+    mock_client.write_coil.reset_mock()
+    svc.set_running(True)
+    mock_client.write_coil.assert_called_with(1, True, device_id=1)
+    mock_client.write_coil.reset_mock()
+    svc.set_running(False)
+    mock_client.write_coil.assert_called_with(1, False, device_id=1)
+
+
+def test_write_result_does_not_touch_running_coil(mock_client):
+    svc = ModbusIOService(
+        _rtu_config(
+            output_assignments=[
+                "link_ok",
+                "running",
+                "result_ng",
+                "off",
+                "off",
+                "off",
+                "off",
+                "off",
+            ]
+        )
+    )
+    svc.connect()
+    mock_client.write_coil.reset_mock()
+    svc.write_result(True)
+    for call in mock_client.write_coil.call_args_list:
+        assert call.args[0] != 1
+
+
 def test_write_result_trerr_skips_y2(mock_client):
     svc = ModbusIOService(_rtu_config())
     svc.connect()

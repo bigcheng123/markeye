@@ -223,8 +223,9 @@ class ConfigStore:
                 "detector": cfg.get("detector", {}),
             }
         if step == 4:
-            io = normalize_io_assignments(cfg.get("io", {}))
-            return {"io": io, "output": cfg.get("output", {})}
+            tools = cfg.get("tools", [])
+            io = normalize_io_assignments(cfg.get("io", {}), tools=tools)
+            return {"io": io, "output": cfg.get("output", {}), "tools": tools}
         raise ValueError(f"无效向导步骤: {step}")
 
     def save_wizard_step(self, step: int, fragment: dict) -> dict:
@@ -237,7 +238,7 @@ class ConfigStore:
         if step == 3:
             _validate_wizard_step3(cfg)
         if step == 4:
-            cfg["io"] = normalize_io_assignments(cfg.get("io", {}))
+            cfg["io"] = normalize_io_assignments(cfg.get("io", {}), tools=cfg.get("tools"))
         self.save(cfg)
         return cfg
 

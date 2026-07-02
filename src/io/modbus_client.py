@@ -23,7 +23,7 @@ class ModbusIOService:
     """Modbus IO：分配表驱动 OUT/IN；Y1=链路 OK，Y2=综合 NG 等。"""
 
     def __init__(self, config: dict):
-        self.cfg = normalize_io_assignments(config.get("io", {}))
+        self.cfg = normalize_io_assignments(config.get("io", {}), tools=config.get("tools"))
         self._client: Any = None
         self._connected = False
         self._last_error: str = ""
@@ -309,6 +309,17 @@ class ModbusIOService:
             return
         if states:
             self.apply_output_states(states)
+
+    def set_running(self, running: bool) -> None:
+        """运行中线圈：ON=程序处于运行模式。"""
+        coil = resolve_output_index(self.output_assignments, "running")
+        if coil is None:
+            return
+        if not self.enabled:
+            logger.debug("IO mock: running(OUT%d)=%s", coil + 1, running)
+            return
+        if self.is_connected():
+            self.write_coil(coil, running)
 
     def set_ready(self, ready: bool) -> None:
         coil = resolve_output_index(self.output_assignments, "ready")
