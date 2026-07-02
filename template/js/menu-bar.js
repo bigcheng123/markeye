@@ -145,9 +145,16 @@ async function restartSoftware(app) {
 async function disconnectSensor(app) {
   const ok = await confirmModal("确定要断开传感器连接吗？");
   if (!ok) return;
-  app.api?.stop();
-  app.statusBar.setIdle();
-  showToast("传感器已断开", "warn");
+  try {
+    if (!isMockMode()) {
+      await app.api?.post("/api/cameras/disconnect");
+    }
+    app.api?.stop();
+    app.statusBar.setIdle();
+    showToast("传感器已断开", "warn");
+  } catch {
+    showToast("断开传感器失败", "err");
+  }
 }
 
 async function resetStats(app) {

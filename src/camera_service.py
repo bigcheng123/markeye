@@ -251,6 +251,20 @@ class CameraService:
         for slot in range(NUM_CAMERA_SLOTS):
             self.disconnect_slot(slot)
 
+    def reconnect_unhealthy_slots(self) -> dict[int, bool]:
+        """重连未连接或抓帧失败（fallback）的槽位。"""
+        devices = slot_device_ids(self.config)
+        results: dict[int, bool] = {}
+        for slot in range(NUM_CAMERA_SLOTS):
+            state = self._slots[slot]
+            if state.connected and not state.using_fallback:
+                continue
+            dev = int(devices[slot]) if slot < len(devices) else slot
+            results[slot] = self.connect_slot(slot, dev)
+        if any(results.values()) and (self._grab_thread is None or not self._grab_thread.is_alive()):
+            self._start_grabber()
+        return results
+
     def switch(self) -> bool:
         """RUN 模式快捷切换：交换 slot0 / slot1 的设备映射并重连。"""
         inp = self.config.setdefault("input", {})

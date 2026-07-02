@@ -42,6 +42,8 @@ from .frame_codec import (
 )
 from .io.modbus_client import ModbusIOService
 from .pipeline import DetectionPipeline
+from .process_lock import acquire_process_lock, release_process_lock
+from .resource_cleanup import cleanup_hardware, register_hardware_cleanup
 from .tools.roi_tools import compute_hsv_area_in_roi, crop_roi, hsv_hit_mask, run_roi_tools, sample_hsv_in_roi
 from .inspection_history import InspectionHistoryStore
 from .stats_store import StatsStore
@@ -75,6 +77,7 @@ class AppState:
         self.ws_clients: set[WebSocket] = set()
         self._preview_task: Optional[asyncio.Task] = None
         self._io_poll_task: Optional[asyncio.Task] = None
+        self._camera_health_task: Optional[asyncio.Task] = None
         self._preview_paused_until: float = 0.0
         self._last_frame_payload: dict = self.build_idle_payload()
         self.run_mode_enabled: bool = True
@@ -106,6 +109,36 @@ class AppState:
             await self._io_poll_task
         except asyncio.CancelledError:
             pass
+        self._io_poll_task = None
+
+    def _ensure_camera_health_task(self) -> None:
+        if self._camera_health_task and not self._camera_health_task.done():
+            return
+        self._camera_health_task = asyncio.create_task(_camera_health_loop())
+
+    async def _stop_camera_health_task(self) -> None:
+        if not self._camera_health_task:
+            return
+        if self._camera_health_task.done():
+            return
+        self._camera_health_task.cancel()
+        try:
+            await self._camera_health_task
+        except asyncio.CancelledError:
+            pass
+        self._camera_health_task = None
+
+    async def shutdown_hardware(self, *, reason: str = "shutdown") -> None:
+        """停止后台任务并释放相机 / Modbus。"""
+        if self._preview_task and not self._preview_task.done():
+            self._preview_task.cancel()
+        if self._idle_flush_task and not self._idle_flush_task.done():
+            self._idle_flush_task.cancel()
+        await self._stop_io_poll_task()
+        await self._stop_camera_health_task()
+        await asyncio.to_thread(cleanup_hardware, self.camera, self.io, reason=reason)
+        self.history.flush()
+        self.stats.flush()
 
     async def apply_io_enabled(self, enabled: bool) -> dict:
         """启停 Modbus：ON 连接并启动轮询；OFF 断开并停止轮询。"""
@@ -310,10 +343,35 @@ async def _idle_history_flush_loop() -> None:
 state = AppState()
 
 
+async def _connect_camera_with_retry() -> bool:
+    """启动时连接相机，指数退避重试。"""
+    cfg = state.config_store.get_cached()
+    inp = cfg.get("input", {})
+    retries = max(1, int(inp.get("camera_connect_retries", 3)))
+    backoff = [1, 2, 4]
+    for attempt in range(retries):
+        if attempt > 0:
+            delay = backoff[min(attempt - 1, len(backoff) - 1)]
+            logger.info(
+                "相机连接重试 %s/%s，等待 %ss（上次异常退出时驱动可能尚未释放）",
+                attempt + 1,
+                retries,
+                delay,
+            )
+            await asyncio.sleep(delay)
+        ok = await asyncio.to_thread(state.camera.connect)
+        if ok:
+            return True
+    return False
+
+
 async def _startup_hardware() -> None:
     """后台连接相机 / Modbus，避免阻塞 WebSocket 握手。"""
     try:
-        await asyncio.to_thread(state.camera.connect)
+        cam_ok = await _connect_camera_with_retry()
+        if not cam_ok:
+            logger.warning("相机初始连接失败，健康检查任务将周期性重试")
+        state._ensure_camera_health_task()
         if state.io.enabled:
             await asyncio.to_thread(state.io.connect)
             await state._sync_running_output()
@@ -327,6 +385,8 @@ async def _startup_hardware() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    acquire_process_lock()
+    register_hardware_cleanup(state.camera, state.io, label="web")
     state._last_frame_payload = json_safe(
         await asyncio.to_thread(state.build_idle_payload)
     )
@@ -346,10 +406,12 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await state._stop_io_poll_task()
+    await state._stop_camera_health_task()
     state.history.flush()
     state.stats.flush()
     state.camera.disconnect()
     state.io.disconnect()
+    release_process_lock()
 
 
 app = FastAPI(title="MarkEye", lifespan=lifespan)
@@ -450,7 +512,42 @@ async def _schedule_restart() -> None:
     """延迟重启 Python 进程（产线由外部启动脚本拉起）。"""
     await asyncio.sleep(0.5)
     logger.info("正在重启软件…")
+    await state.shutdown_hardware(reason="restart")
+    await asyncio.sleep(0.3)
     os.execv(sys.executable, [sys.executable, "-m", "src.web_server"])
+
+
+async def _schedule_shutdown() -> None:
+    """优雅停机：释放硬件后退出进程。"""
+    await asyncio.sleep(0.1)
+    logger.info("正在关闭软件…")
+    await state.shutdown_hardware(reason="api_shutdown")
+    await asyncio.sleep(0.3)
+    os._exit(0)
+
+
+async def _camera_health_loop():
+    """相机健康检查：未连接或抓帧失败时周期性重连。"""
+    last_reconnect = 0.0
+    while True:
+        try:
+            cfg = state.config_store.get_cached()
+            inp = cfg.get("input", {})
+            interval_s = float(inp.get("camera_reconnect_interval_s", 5))
+            now = time.monotonic()
+            needs = any(
+                not s["connected"] or s["using_fallback"]
+                for s in state.camera.slot_status()
+            )
+            if needs and now - last_reconnect >= interval_s:
+                await asyncio.to_thread(state.camera.reconnect_unhealthy_slots)
+                last_reconnect = now
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("相机健康检查异常: %s", exc)
+            await asyncio.sleep(2.0)
 
 
 async def _io_poll_loop():
@@ -543,6 +640,14 @@ async def system_restart():
     """重启 Web 服务进程。"""
     logger.info("收到重启软件请求")
     asyncio.create_task(_schedule_restart())
+    return {"ok": True}
+
+
+@app.post("/api/system/shutdown")
+async def system_shutdown():
+    """优雅停机：释放相机与 Modbus 后退出进程。"""
+    logger.info("收到关闭软件请求")
+    asyncio.create_task(_schedule_shutdown())
     return {"ok": True}
 
 
@@ -1102,6 +1207,19 @@ async def get_tool_image(tool: str):
         "image_base64": encode_image_b64(crop.img, quality),
         "width": w,
         "height": h,
+    }
+
+
+@app.post("/api/cameras/disconnect")
+async def cameras_disconnect():
+    """释放服务端相机连接（菜单「断开传感器」）。"""
+    await asyncio.to_thread(state.camera.disconnect)
+    payload = await asyncio.to_thread(state.build_idle_payload)
+    await state.broadcast(payload)
+    return {
+        "ok": True,
+        "cameras": state.camera.slot_status(),
+        "connected": state.camera.connected,
     }
 
 

@@ -6,6 +6,8 @@ input:
   fallback_image: ui/ui_sample/target.PNG
   exposure: 50
   gain: 1
+  camera_reconnect_interval_s: 5
+  camera_connect_retries: 3
 preprocess:
   resize_width: 1280
   resize_height: null
@@ -190,6 +192,8 @@ io:
   serial_port: COM4
   poll_interval_ms: 50
   reconnect_interval_s: 3
+  connect_retries: 3
+  connect_retry_delay_s: 1.0
   output_assignments:
   - link_ok
   - result_ng

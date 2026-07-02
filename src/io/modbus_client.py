@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Optional
 
 from .assignments import (
@@ -97,6 +98,23 @@ class ModbusIOService:
             self._last_error = "pymodbus_not_installed"
             return False
 
+        retries = max(1, int(self.cfg.get("connect_retries", 3)))
+        delay_s = float(self.cfg.get("connect_retry_delay_s", 1.0))
+        for attempt in range(retries):
+            if attempt > 0:
+                wait = delay_s * attempt
+                logger.info(
+                    "Modbus 连接重试 %s/%s，等待 %.1fs（串口可能尚未释放）",
+                    attempt + 1,
+                    retries,
+                    wait,
+                )
+                time.sleep(wait)
+            if self._connect_once():
+                return True
+        return False
+
+    def _connect_once(self) -> bool:
         self.disconnect()
         try:
             self._client = self._create_client()
@@ -124,7 +142,6 @@ class ModbusIOService:
             self._last_error = "pymodbus_not_installed"
             return False
         except PermissionError as exc:
-            # Windows 串口独占：常见于 Modbus Poll/串口助手占用 COM 口
             self._connected = False
             self._last_error = f"serial_permission_error: {exc}"
             self.set_link_ok(False)
@@ -137,7 +154,7 @@ class ModbusIOService:
             self.set_link_ok(False)
             return False
 
-    def disconnect(self) -> None:
+    def _release_client(self) -> None:
         with self._pulse_lock:
             for t in self._pulse_timers.values():
                 try:
@@ -145,15 +162,29 @@ class ModbusIOService:
                 except Exception:
                     pass
             self._pulse_timers = {}
-        if self._connected:
-            self.set_link_ok(False)
-        if self._client:
+        client = self._client
+        was_connected = self._connected
+        self._connected = False
+        self._client = None
+        if was_connected and client is not None:
+            coil = self._link_ok_index()
+            if coil is not None and self.enabled:
+                try:
+                    fn = getattr(client, "write_coil")
+                    try:
+                        fn(coil, False, device_id=self.unit_id)
+                    except TypeError:
+                        fn(coil, False, slave=self.unit_id)
+                except Exception:
+                    pass
+        if client is not None:
             try:
-                self._client.close()
+                client.close()
             except Exception:
                 pass
-            self._client = None
-        self._connected = False
+
+    def disconnect(self) -> None:
+        self._release_client()
 
     def write_coil(self, address: int, value: bool) -> bool:
         if not self.enabled:
@@ -217,8 +248,7 @@ class ModbusIOService:
                 self.write_coil(addr, True)
 
     def _mark_disconnected(self) -> None:
-        self._connected = False
-        self.set_link_ok(False)
+        self._release_client()
 
     def read_discrete_inputs(self, count: int = IO_CHANNEL_COUNT) -> Optional[list[bool]]:
         if not self.enabled or not self.is_connected():

@@ -22,6 +22,8 @@ def client(tmp_path, monkeypatch):
     master_dir.mkdir(parents=True)
 
     monkeypatch.setattr(web_server, "ROOT", tmp_path)
+    monkeypatch.setattr(web_server, "acquire_process_lock", lambda: None)
+    monkeypatch.setattr(web_server, "release_process_lock", lambda: None)
     web_server.state = web_server.AppState()
     web_server.state.config_store.config_dir = config_dir
     web_server.state.calibration.master_dir = master_dir
