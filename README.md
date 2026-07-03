@@ -2,6 +2,15 @@
 
 基于 **Python + OpenCV** 的产线视觉检测系统，用于检测产品上的标记是否合格（颜色 / 面积 / 位置）。
 
+## 分支与平台
+
+| 分支 | 平台 | 说明 |
+|------|------|------|
+| `main` | Windows | 开发调参 |
+| `linux` | Ubuntu 24.04 | 产线部署 |
+
+Windows 开发机使用 `git checkout main`；Ubuntu 产线机使用 `git checkout linux`（或 `git clone -b linux`）。
+
 ## 系统边界
 
 MarkEye 是产线上的**视觉检测子系统**，负责采图、检测、结果显示与履历记录，**不包含**印记加工设备的控制。
