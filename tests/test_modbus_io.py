@@ -16,6 +16,7 @@ def _rtu_config(**overrides) -> dict:
             "transport": "rtu",
             "serial_port": "COM4",
             "unit_id": 1,
+            "retries": 1,
             "output_assignments": [
                 "link_ok",
                 "result_ng",
@@ -288,3 +289,23 @@ def test_test_output_writes_coil(mock_client):
     mock_client.write_coil.reset_mock()
     assert svc.test_output(2, True) is True
     mock_client.write_coil.assert_called_with(2, True, device_id=1)
+
+
+def test_write_coil_none_result_marks_disconnected(mock_client):
+    """write_coil 返回 None 时应视为失败并标记断线。"""
+    svc = ModbusIOService(_rtu_config())
+    svc.connect()
+    mock_client.write_coil.return_value = None
+    assert svc.write_coil(0, True) is False
+    assert not svc.is_connected()
+
+
+def test_mark_disconnected_clears_connected(mock_client):
+    """断线标记后应清除连接状态并释放 client。"""
+    svc = ModbusIOService(_rtu_config())
+    svc.connect()
+    assert svc._client is not None
+    svc._mark_disconnected()
+    assert not svc.is_connected()
+    assert svc._client is None
+    mock_client.close.assert_called()

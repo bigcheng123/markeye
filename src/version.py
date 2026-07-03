@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 # 手动维护；每次发布递进 0.1（如 1.0 → 1.1 → 1.2）
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 
 
 def _run_git(args: list[str], *, cwd: Path) -> Optional[str]:

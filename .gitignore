@@ -41,3 +41,6 @@ node_modules/
 
 # Local agent/workspace settings
 .claude/settings.local.json
+
+# Large archives (not for version control)
+source/*.zip

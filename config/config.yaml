@@ -2,7 +2,6 @@ input:
   cameras:
   - 0
   - 1
-  - 2
   camera_id: 0
   fallback_image: ui/ui_sample/target.PNG
   exposure: 50
@@ -140,35 +139,35 @@ tools:
     - 185
     - 241
   name: 色彩识别
-- name: 色彩识别
+- id: '02'
+  cam: 1
   type: hsv_roi
   enabled: true
-  cam: 1
   roi:
     shape: rect
-    x: 280
+    x: 400
     y: 300
-    w: 120
-    h: 80
+    w: 50
+    h: 50
     cx: 0
     cy: 0
     r: 10
   params:
     h_lower:
-    - 89
     - 0
-    - 44
+    - 0
+    - 3
     h_upper:
     - 120
-    - 80
-    - 227
-    match_area_max: 8000
-    match_area_min: 2000
+    - 193
+    - 140
+    match_area_max: 2500
+    match_area_min: 200
     h_sample:
-    - 98
-    - 23
-    - 133
-  id: '02'
+    - 39
+    - 94
+    - 109
+  name: 色彩识别
 io:
   enabled: true
   host: 127.0.0.1
@@ -182,7 +181,7 @@ io:
     busy: null
     link_ok: 0
     result_ng: 1
-  comprehensive_logic: 1
+  comprehensive_logic: 2
   auto_switch:
     enabled: false
     ok_program: null
@@ -191,15 +190,15 @@ io:
   trerr_enabled: true
   transport: rtu
   serial_port: /dev/ttyUSB0
-  poll_interval_ms: 50
+  poll_interval_ms: 500
   reconnect_interval_s: 3
   connect_retries: 3
   connect_retry_delay_s: 1.0
   output_assignments:
   - link_ok
   - result_ng
-  - 'off'
-  - 'off'
+  - tool:01
+  - tool:02
   - 'off'
   - 'off'
   - 'off'
@@ -217,7 +216,8 @@ io:
   bytesize: 8
   parity: N
   stopbits: 1
-  timeout_s: 1.0
+  timeout_s: 1.5
+  retries: 3
   inputs:
     trigger_bits:
     - 0

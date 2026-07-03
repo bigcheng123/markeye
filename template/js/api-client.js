@@ -137,6 +137,12 @@ class MockApiClient {
     if (path === "/api/system/restart") {
       return { ok: true, mock: true };
     }
+    if (path === "/api/system/shutdown") {
+      return { ok: true, mock: true };
+    }
+    if (path === "/api/cameras/disconnect") {
+      return { ok: true, mock: true, connected: false, cameras: [] };
+    }
     if (path === "/api/stats/reset") {
       const { resetMockStats } = await import("./mock-data.js");
       resetMockStats();

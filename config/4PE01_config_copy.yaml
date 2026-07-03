@@ -1,0 +1,232 @@
+input:
+  cameras:
+  - 0
+  - 1
+  camera_id: 0
+  fallback_image: ui/ui_sample/target.PNG
+  exposure: 50
+  gain: 1
+preprocess:
+  resize_width: 1280
+  resize_height: null
+  gray_method: cvt
+  blur_kernel: 5
+  threshold_method: otsu
+  threshold_value: 127
+  threshold_max: 255
+  perspective_correct: false
+  perspective_points: []
+  morph_kernel: 3
+  morph_iters: 1
+calibration:
+  master_image: data/masters/4PE01_config_copy/master_cam0.jpg
+  sample_count: 58
+  reference_center:
+  - 1250
+  - 957
+  reference_area: 142.0
+  learn_threshold: 73
+  masters:
+    '0': data/masters/4PE01_config_copy/master_cam0.jpg
+    '1': data/masters/4PE01_config_copy/master_cam1.jpg
+trigger:
+  source: external
+  exposure_ms: null
+  delay_ms: 0
+detector:
+  method: contour
+  contour_mode: external
+  contour_approx: simple
+  min_area: 50
+  max_area: 50000
+  min_side: 5
+  max_side: 300
+inspect:
+  color_check: true
+  color_tolerance: 0.1
+  color_space: hsv
+  colors:
+    red:
+      lower:
+      - 0
+      - 50
+      - 50
+      upper:
+      - 10
+      - 255
+      - 255
+    blue:
+      lower:
+      - 100
+      - 50
+      - 50
+      upper:
+      - 130
+      - 255
+      - 255
+    green:
+      lower:
+      - 40
+      - 50
+      - 50
+      upper:
+      - 80
+      - 255
+      - 255
+    yellow:
+      lower:
+      - 20
+      - 50
+      - 50
+      upper:
+      - 35
+      - 255
+      - 255
+    black:
+      lower:
+      - 0
+      - 0
+      - 0
+      upper:
+      - 180
+      - 255
+      - 46
+    white:
+      lower:
+      - 0
+      - 0
+      - 200
+      upper:
+      - 180
+      - 30
+      - 255
+  size_check: true
+  size_tolerance: 0.15
+  position_check: true
+  position_tolerance: 10
+tools:
+- id: '01'
+  cam: 0
+  type: hsv_roi
+  enabled: true
+  roi:
+    shape: rect
+    x: 400
+    y: 350
+    w: 60
+    h: 40
+    cx: 0
+    cy: 0
+    r: 10
+  params:
+    h_lower:
+    - 20
+    - 49
+    - 100
+    h_upper:
+    - 66
+    - 255
+    - 200
+    match_area_max: 500
+    match_area_min: 180
+    h_sample:
+    - 34
+    - 255
+    - 157
+  name: 色彩识别
+- name: 色彩识别
+  type: hsv_roi
+  enabled: true
+  cam: 1
+  roi:
+    shape: rect
+    x: 280
+    y: 300
+    w: 120
+    h: 80
+    cx: 0
+    cy: 0
+    r: 10
+  params:
+    h_lower:
+    - 50
+    - 100
+    - 100
+    h_upper:
+    - 180
+    - 255
+    - 255
+    match_area_max: 8000
+    match_area_min: 2000
+    h_sample:
+    - 63
+    - 100
+    - 243
+  id: '02'
+io:
+  enabled: true
+  host: 127.0.0.1
+  port: 502
+  unit_id: 1
+  output_pulse_ms: 1000
+  outputs:
+    ok: null
+    ng: null
+    ready: null
+    busy: null
+    link_ok: 0
+    result_ng: 1
+  comprehensive_logic: 1
+  auto_switch:
+    enabled: false
+    ok_program: null
+    ng_program: null
+    delay_ms: 0
+  trerr_enabled: true
+  transport: rtu
+  serial_port: COM4
+  poll_interval_ms: 50
+  reconnect_interval_s: 3
+  output_assignments:
+  - link_ok
+  - result_ng
+  - tool:01
+  - tool:02
+  - 'off'
+  - 'off'
+  - 'off'
+  - running
+  input_assignments:
+  - trigger
+  - trigger
+  - switch_program
+  - 'off'
+  - 'off'
+  - 'off'
+  - 'off'
+  - 'off'
+  baudrate: 38400
+  bytesize: 8
+  parity: N
+  stopbits: 1
+  timeout_s: 1.0
+  inputs:
+    trigger_bits:
+    - 0
+    - 1
+  comprehensive_logic_v2: true
+output:
+  save_result: false
+  save_policy: none
+  save_dir: output/
+  show_debug: false
+  log_level: INFO
+  ng_alert: true
+  stats_file: output/stats.json
+  jpeg_quality: 70
+  history:
+    enabled: false
+    format: csv
+    dir: output/history/
+    flush_on_profile_switch: true
+    flush_on_idle_minutes: 50

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from pathlib import Path
 from typing import Any, Optional
 
 from .assignments import (
@@ -31,6 +33,7 @@ class ModbusIOService:
         self._pulse_lock = threading.Lock()
         self._prev_inputs: list[bool] = [False] * IO_CHANNEL_COUNT
         self.busy = False
+        self._last_activity: float = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -54,6 +57,26 @@ class ModbusIOService:
 
     def is_connected(self) -> bool:
         return self._connected and self._client is not None
+
+    @property
+    def idle_disconnect_s(self) -> float:
+        return float(self.cfg.get("idle_disconnect_s", 30))
+
+    def touch_activity(self) -> None:
+        self._last_activity = time.monotonic()
+
+    def maybe_idle_disconnect(self) -> bool:
+        """空闲超时断开：设备长时间无通信则释放串口，下次轮询自动重连。"""
+        if not self.is_connected():
+            return False
+        if self._last_activity <= 0:
+            return False
+        idle = time.monotonic() - self._last_activity
+        if idle >= self.idle_disconnect_s:
+            logger.info("Modbus 空闲 %.0fs，断开连接以释放串口", idle)
+            self.disconnect()
+            return True
+        return False
 
     def _link_ok_index(self) -> Optional[int]:
         return resolve_output_index(self.output_assignments, "link_ok")
@@ -86,6 +109,68 @@ class ModbusIOService:
         except TypeError:
             return fn(*args, slave=self.unit_id, **kwargs)
 
+    def _rtu_port_precheck(self) -> Optional[str]:
+        """Linux 串口节点预检，便于 UI 显示可操作的错误信息。"""
+        if self.transport != "rtu":
+            return None
+        port = str(self.cfg.get("serial_port", "")).strip()
+        if not port:
+            return "serial_port_not_configured"
+        if port.upper().startswith("COM"):
+            return None
+        if not Path(port).exists():
+            return f"serial_port_missing: {port}"
+        return None
+
+    def _release_client(self) -> None:
+        client = self._client
+        self._client = None
+        self._connected = False
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _connect_once(self) -> bool:
+        """单次打开连接并验证读写。"""
+        port_err = self._rtu_port_precheck()
+        if port_err:
+            self._last_error = port_err
+            logger.warning("Modbus RTU 串口不可用: %s", port_err)
+            return False
+
+        self._client = self._create_client()
+        ok = bool(self._client.connect())
+        self._connected = ok
+        self._last_error = ""
+        if not ok:
+            port = self.cfg.get("serial_port") if self.transport == "rtu" else (
+                f"{self.cfg.get('host')}:{self.cfg.get('port', 502)}"
+            )
+            self._last_error = f"connect_failed: {port}"
+            logger.warning("Modbus %s 打开失败: %s", self.transport.upper(), port)
+            self._release_client()
+            return False
+
+        self._prev_inputs = [False] * IO_CHANNEL_COUNT
+        seed = self.read_discrete_inputs(IO_CHANNEL_COUNT)
+        if seed:
+            self._prev_inputs = list(seed[:IO_CHANNEL_COUNT])
+        self.set_link_ok(True)
+        if not self._connected:
+            self._last_error = "link_ok_write_failed"
+            logger.warning("Modbus %s 连接后写 link_ok 失败", self.transport.upper())
+            self._release_client()
+            return False
+
+        label = self.cfg.get("serial_port") if self.transport == "rtu" else (
+            f"{self.cfg.get('host')}:{self.cfg.get('port', 502)}"
+        )
+        self.touch_activity()
+        logger.info("Modbus %s 已连接: %s", self.transport.upper(), label)
+        return True
+
     def connect(self) -> bool:
         if not self.enabled:
             return False
@@ -98,43 +183,33 @@ class ModbusIOService:
             return False
 
         self.disconnect()
+        retries = max(1, int(self.cfg.get("connect_retries", 1)))
+        delay_s = max(0.0, float(self.cfg.get("connect_retry_delay_s", 1.0)))
         try:
-            self._client = self._create_client()
-            ok = bool(self._client.connect())
-            self._connected = ok
-            self._last_error = ""
-            if ok:
-                self._prev_inputs = [False] * IO_CHANNEL_COUNT
-                seed = self.read_discrete_inputs(IO_CHANNEL_COUNT)
-                if seed:
-                    self._prev_inputs = list(seed[:IO_CHANNEL_COUNT])
-                self.set_link_ok(True)
-                label = self.cfg.get("serial_port") if self.transport == "rtu" else (
-                    f"{self.cfg.get('host')}:{self.cfg.get('port', 502)}"
-                )
-                logger.info("Modbus %s 已连接: %s", self.transport.upper(), label)
-            else:
-                self.set_link_ok(False)
-                self._last_error = "connect_failed"
-                logger.warning("Modbus %s 连接失败", self.transport.upper())
-            return ok
+            for attempt in range(retries):
+                if attempt > 0:
+                    logger.info("Modbus 连接重试 %d/%d", attempt + 1, retries)
+                    if delay_s > 0:
+                        time.sleep(delay_s)
+                if self._connect_once():
+                    return True
+            return False
         except ImportError:
             logger.warning("pymodbus 未安装，IO 以日志模式运行")
             self._connected = False
             self._last_error = "pymodbus_not_installed"
             return False
         except PermissionError as exc:
-            # Windows 串口独占：常见于 Modbus Poll/串口助手占用 COM 口
             self._connected = False
             self._last_error = f"serial_permission_error: {exc}"
-            self.set_link_ok(False)
+            self._release_client()
             logger.warning("Modbus 串口被占用/拒绝访问: %s", exc)
             return False
         except Exception as exc:
             logger.warning("Modbus 连接失败: %s", exc)
             self._connected = False
             self._last_error = str(exc)
-            self.set_link_ok(False)
+            self._release_client()
             return False
 
     def disconnect(self) -> None:
@@ -147,13 +222,7 @@ class ModbusIOService:
             self._pulse_timers = {}
         if self._connected:
             self.set_link_ok(False)
-        if self._client:
-            try:
-                self._client.close()
-            except Exception:
-                pass
-            self._client = None
-        self._connected = False
+        self._release_client()
 
     def write_coil(self, address: int, value: bool) -> bool:
         if not self.enabled:
@@ -163,11 +232,12 @@ class ModbusIOService:
             return False
         try:
             result = self._modbus_call("write_coil", int(address), bool(value))
-            if hasattr(result, "isError") and result.isError():
+            if result is None or (hasattr(result, "isError") and result.isError()):
                 logger.error("Modbus 写线圈失败: addr=%s", address)
                 self._last_error = f"write_coil_failed: addr={address}"
                 self._mark_disconnected()
                 return False
+            self.touch_activity()
             return True
         except Exception as exc:
             logger.error("Modbus 写入失败: %s", exc)
@@ -218,7 +288,11 @@ class ModbusIOService:
 
     def _mark_disconnected(self) -> None:
         self._connected = False
-        self.set_link_ok(False)
+        try:
+            self.set_link_ok(False)
+        except Exception:
+            pass
+        self._release_client()
 
     def read_discrete_inputs(self, count: int = IO_CHANNEL_COUNT) -> Optional[list[bool]]:
         if not self.enabled or not self.is_connected():
@@ -231,6 +305,7 @@ class ModbusIOService:
                 self._mark_disconnected()
                 return None
             bits = getattr(result, "bits", None) or []
+            self.touch_activity()
             return [bool(bits[i]) if i < len(bits) else False for i in range(count)]
         except Exception as exc:
             logger.warning("Modbus 读输入异常: %s", exc)
@@ -250,6 +325,7 @@ class ModbusIOService:
                 self._mark_disconnected()
                 return None
             bits = getattr(result, "bits", None) or []
+            self.touch_activity()
             return [bool(bits[i]) if i < len(bits) else False for i in range(count)]
         except Exception as exc:
             logger.warning("Modbus 读线圈异常: %s", exc)

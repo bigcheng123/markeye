@@ -83,20 +83,21 @@ def process_camera(camera_id: int, cfg: dict):
     pipeline = DetectionPipeline(cfg)
     logger.info(f"相机 {camera_id} 已启动，按 'q' 退出")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        result = pipeline.run(frame)
-        display = result.result_image if result.result_image is not None else frame
+            result = pipeline.run(frame)
+            display = result.result_image if result.result_image is not None else frame
 
-        cv2.imshow("MarkEye — 实时检测", display)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+            cv2.imshow("MarkEye — 实时检测", display)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 def batch_process(path: str, cfg: dict):
