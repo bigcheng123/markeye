@@ -185,9 +185,11 @@ io:
     delay_ms: 0
   trerr_enabled: true
   transport: rtu
-  serial_port: COM4
+  serial_port: /dev/ttyS0
   poll_interval_ms: 50
   reconnect_interval_s: 3
+  connect_retries: 3
+  connect_retry_delay_s: 1.0
   output_assignments:
   - link_ok
   - result_ng

@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 title MarkEye Stop
 
@@ -18,7 +19,14 @@ if errorlevel 1 (
 )
 
 echo [2/3] Waiting for process to exit...
-timeout /t 2 /nobreak >nul
+set WAIT_DONE=0
+for /L %%i in (1,1,10) do (
+    if !WAIT_DONE! equ 0 (
+        curl -sf -m 1 "http://127.0.0.1:%PORT%/api/health" >nul 2>&1
+        if errorlevel 1 set WAIT_DONE=1
+        if !WAIT_DONE! equ 0 timeout /t 1 /nobreak >nul
+    )
+)
 
 echo [3/3] Checking port %PORT%...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":%PORT%" ^| findstr "LISTENING"') do (

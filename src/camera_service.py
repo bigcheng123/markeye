@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import grp
 import os
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -43,11 +44,21 @@ def _read_frame_with_timeout(cap: cv2.VideoCapture, timeout_s: float = 2.0) -> t
     return bool(box[0]), box[1]
 
 
-def _probe_camera(cam_id: int, *, timeout_s: float = 2.0) -> Optional[cv2.VideoCapture]:
-    """尝试打开设备并读取一帧；成功则返回已打开的 VideoCapture。"""
+def probe_camera_diagnostic(
+    cam_id: int, *, timeout_s: float = 2.0
+) -> tuple[dict[str, Any], Optional[cv2.VideoCapture]]:
+    """探测单路相机，返回诊断信息与成功时的 VideoCapture。"""
+    diag: dict[str, Any] = {
+        "device_id": int(cam_id),
+        "opened": False,
+        "read_ok": False,
+        "backend": None,
+        "reason": "not_found",
+    }
     deadline = time.monotonic() + max(timeout_s, 0.5)
     for backend in _capture_backends():
         if time.monotonic() >= deadline:
+            diag["reason"] = "timeout"
             break
         cap = (
             cv2.VideoCapture(cam_id)
@@ -56,13 +67,83 @@ def _probe_camera(cam_id: int, *, timeout_s: float = 2.0) -> Optional[cv2.VideoC
         )
         if not cap.isOpened():
             cap.release()
+            diag["reason"] = "open_failed"
             continue
+        diag["opened"] = True
+        try:
+            diag["backend"] = cap.getBackendName() or None
+        except cv2.error:
+            diag["backend"] = None
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         remaining = max(0.2, deadline - time.monotonic())
         ret, frame = _read_frame_with_timeout(cap, remaining)
         if ret and frame is not None:
-            return cap
+            diag["read_ok"] = True
+            diag["reason"] = "ok"
+            return diag, cap
+        diag["reason"] = "read_timeout" if remaining <= 0.05 else "read_failed"
         cap.release()
+    return diag, None
+
+
+def _probe_camera(cam_id: int, *, timeout_s: float = 2.0) -> Optional[cv2.VideoCapture]:
+    """尝试打开设备并读取一帧；成功则返回已打开的 VideoCapture。"""
+    _diag, cap = probe_camera_diagnostic(cam_id, timeout_s=timeout_s)
+    return cap
+
+
+def _linux_v4l2_sysfs_nodes() -> list[dict[str, Any]]:
+    """解析 /sys/class/video4linux，列出内核注册的 V4L2 节点。"""
+    base = Path("/sys/class/video4linux")
+    if not base.is_dir():
+        return []
+    nodes: list[dict[str, Any]] = []
+    for entry in sorted(base.iterdir(), key=lambda p: p.name):
+        if not entry.name.startswith("video"):
+            continue
+        try:
+            device_id = int(entry.name[5:])
+        except ValueError:
+            continue
+        name = ""
+        name_path = entry / "name"
+        if name_path.is_file():
+            try:
+                name = name_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                name = ""
+        nodes.append({
+            "device_id": device_id,
+            "dev_path": f"/dev/{entry.name}",
+            "name": name or "—",
+        })
+    return nodes
+
+
+def _linux_video_access_hint() -> Optional[dict[str, str]]:
+    """Linux：检查 /dev/video* 是否存在及当前用户是否有访问权限。"""
+    if sys.platform != "linux":
+        return None
+    video_devs = sorted(Path("/dev").glob("video*"))
+    if not video_devs:
+        return {
+            "reason": "no_video_nodes",
+            "message": "系统未识别到 /dev/video* 设备，请检查相机连接与驱动。",
+        }
+    try:
+        group_names = {grp.getgrgid(g).gr_name for g in os.getgroups()}
+    except (KeyError, OSError):
+        group_names = set()
+    if "video" not in group_names:
+        blocked = [p for p in video_devs if not os.access(p, os.R_OK | os.W_OK)]
+        if blocked:
+            return {
+                "reason": "permission_denied",
+                "message": (
+                    "当前用户未加入 video 组，无法访问相机设备。"
+                    "请执行 sudo usermod -aG video $USER 后重新登录。"
+                ),
+            }
     return None
 
 
@@ -90,32 +171,85 @@ def _device_model(cap: cv2.VideoCapture) -> str:
     return "—"
 
 
-def enumerate_camera_devices(*, max_probe: int = 10) -> list[dict]:
+def _device_info_from_cap(device_id: int, cap: cv2.VideoCapture) -> dict:
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    try:
+        backend = cap.getBackendName() or "—"
+    except cv2.error:
+        backend = "—"
+    return {
+        "device_id": int(device_id),
+        "model": _device_model(cap),
+        "backend": backend,
+        "width": w,
+        "height": h,
+        "accessible": True,
+    }
+
+
+def enumerate_camera_devices(
+    *, max_probe: int = 10, timeout_s: float = 2.0
+) -> list[dict]:
     """探测本机可打开的 OpenCV 相机（设备索引 0 .. max_probe-1）。"""
+    return enumerate_camera_devices_detail(max_probe=max_probe, timeout_s=timeout_s)["devices"]
+
+
+def enumerate_camera_devices_detail(
+    *, max_probe: int = 10, timeout_s: float = 2.0
+) -> dict[str, Any]:
+    """枚举相机并附带逐索引诊断信息。"""
     limit = max(1, int(max_probe))
     devices: list[dict] = []
+    diagnostics: list[dict] = []
     for device_id in range(limit):
-        cap = _probe_camera(device_id)
+        diag, cap = probe_camera_diagnostic(device_id, timeout_s=timeout_s)
+        diagnostics.append(diag)
         if cap is None:
             continue
         try:
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-            try:
-                backend = cap.getBackendName() or "—"
-            except cv2.error:
-                backend = "—"
-            devices.append({
-                "device_id": device_id,
-                "model": _device_model(cap),
-                "backend": backend,
-                "width": w,
-                "height": h,
-                "accessible": True,
-            })
+            devices.append(_device_info_from_cap(device_id, cap))
         finally:
             cap.release()
-    return devices
+    return _build_enumerate_payload(devices, diagnostics)
+
+
+def _build_enumerate_payload(
+    devices: list[dict], diagnostics: list[dict]
+) -> dict[str, Any]:
+    hints: list[dict[str, str]] = []
+    v4l2_nodes: list[dict[str, Any]] = []
+    if sys.platform == "linux":
+        v4l2_nodes = _linux_v4l2_sysfs_nodes()
+        access_hint = _linux_video_access_hint()
+        if access_hint:
+            hints.append(access_hint)
+        if not devices and v4l2_nodes:
+            opened_any = any(d.get("opened") for d in diagnostics)
+            if opened_any:
+                hints.append({
+                    "reason": "metadata_or_read_failed",
+                    "message": (
+                        "检测到 V4L2 节点但未能读到有效帧；部分索引可能为元数据节点。"
+                        "请尝试「深度扫描」或手动填写可采集的 device_id。"
+                    ),
+                })
+            elif not access_hint:
+                hints.append({
+                    "reason": "index_mismatch",
+                    "message": (
+                        "系统存在 V4L2 设备节点，但 OpenCV 未能打开。"
+                        "请确认相机未被占用，或尝试「深度扫描」扩大索引范围。"
+                    ),
+                })
+    devices.sort(key=lambda d: d["device_id"])
+    return {
+        "count": len(devices),
+        "devices": devices,
+        "diagnostics": diagnostics,
+        "hints": hints,
+        "v4l2_nodes": v4l2_nodes,
+    }
 
 
 @dataclass
@@ -136,6 +270,10 @@ class CameraService:
         self.config = config
         self._slots: list[_SlotState] = [_SlotState() for _ in range(NUM_CAMERA_SLOTS)]
         self._lock = threading.Lock()
+        # 保护每个槽位 VideoCapture 的生命周期（read / get / release / open）。
+        # OpenCV 的 VideoCapture 非线程安全：抓帧线程 read() 与重连时的 release()
+        # 若并发会触发 V4L2 VIDIOC_DQBUF 失败并导致原生段错误。
+        self._cap_lock = threading.RLock()
         self._grab_stop = threading.Event()
         self._grab_thread: Optional[threading.Thread] = None
         # 兼容旧测试/旧代码：曾直接使用 _connected/_latest_frame/_frame_seq（单路相机模型）
@@ -198,6 +336,68 @@ class CameraService:
             })
         return out
 
+    def describe_connected_devices(self) -> list[dict]:
+        """返回当前已连接槽位对应的 OpenCV 设备信息（无需重新 open）。"""
+        seen: set[int] = set()
+        devices: list[dict] = []
+        with self._cap_lock:
+            for state in self._slots:
+                if not state.connected or state.cap is None:
+                    continue
+                dev_id = int(state.device_id)
+                if dev_id in seen:
+                    continue
+                seen.add(dev_id)
+                devices.append(_device_info_from_cap(dev_id, state.cap))
+        return devices
+
+    def _probe_timeout_s(self) -> float:
+        inp = self.config.get("input", {})
+        raw = inp.get("probe_timeout_s", 2.0)
+        try:
+            return max(0.5, float(raw))
+        except (TypeError, ValueError):
+            return 2.0
+
+    def enumerate_devices_detail(
+        self, *, max_probe: int = 10, timeout_s: float | None = None
+    ) -> dict[str, Any]:
+        """枚举相机：先合并已连接槽位，再探测其余索引，附带诊断。"""
+        limit = max(1, int(max_probe))
+        probe_timeout = self._probe_timeout_s() if timeout_s is None else max(0.5, float(timeout_s))
+        devices = self.describe_connected_devices()
+        seen = {d["device_id"] for d in devices}
+        diagnostics: list[dict] = []
+        device_by_id = {d["device_id"]: d for d in devices}
+
+        for device_id in range(limit):
+            if device_id in seen:
+                connected = device_by_id[device_id]
+                diagnostics.append({
+                    "device_id": device_id,
+                    "opened": True,
+                    "read_ok": True,
+                    "backend": connected.get("backend"),
+                    "reason": "connected",
+                })
+                continue
+            diag, cap = probe_camera_diagnostic(device_id, timeout_s=probe_timeout)
+            diagnostics.append(diag)
+            if cap is None:
+                continue
+            try:
+                devices.append(_device_info_from_cap(device_id, cap))
+                seen.add(device_id)
+            finally:
+                cap.release()
+
+        return _build_enumerate_payload(devices, diagnostics)
+
+    def enumerate_devices(
+        self, *, max_probe: int = 10, timeout_s: float | None = None
+    ) -> list[dict]:
+        return self.enumerate_devices_detail(max_probe=max_probe, timeout_s=timeout_s)["devices"]
+
     def _open_capture(self, cam_id: int) -> Optional[cv2.VideoCapture]:
         return _probe_camera(cam_id)
 
@@ -209,7 +409,7 @@ class CameraService:
             cameras[0] = int(camera_id)
             inp["cameras"] = cameras
             inp["camera_id"] = int(camera_id)
-        return all(self.connect_all().values())
+        return any(self.connect_all().values())
 
     def connect_all(self, cameras: Optional[list[int]] = None) -> dict[int, bool]:
         devices = cameras if cameras is not None else slot_device_ids(self.config)
@@ -227,22 +427,26 @@ class CameraService:
         if slot < 0 or slot >= NUM_CAMERA_SLOTS:
             return False
         self.disconnect_slot(slot)
+        # 在锁外完成设备探测/打开（可能较慢），再在锁内挂载 cap，避免与抓帧线程竞争。
+        cap = self._open_capture(int(device_id))
         state = self._slots[slot]
-        state.device_id = int(device_id)
-        state.cap = self._open_capture(state.device_id)
-        state.connected = state.cap is not None
-        state.using_fallback = not state.connected
+        with self._cap_lock:
+            state.device_id = int(device_id)
+            state.cap = cap
+            state.connected = cap is not None
+            state.using_fallback = not state.connected
         return state.connected
 
     def disconnect_slot(self, slot: int) -> None:
         if slot < 0 or slot >= NUM_CAMERA_SLOTS:
             return
         state = self._slots[slot]
-        if state.cap is not None:
-            state.cap.release()
-            state.cap = None
-        state.connected = False
-        state.using_fallback = False
+        with self._cap_lock:
+            if state.cap is not None:
+                state.cap.release()
+                state.cap = None
+            state.connected = False
+            state.using_fallback = False
         with self._lock:
             state.latest_frame = None
 
@@ -318,9 +522,12 @@ class CameraService:
             any_read = False
             for slot in range(NUM_CAMERA_SLOTS):
                 state = self._slots[slot]
-                if not state.connected or state.cap is None:
-                    continue
-                ret, frame = state.cap.read()
+                # 在持有 _cap_lock 的前提下读取，确保 read() 期间 cap 不会被 release()。
+                with self._cap_lock:
+                    cap = state.cap
+                    if not state.connected or cap is None:
+                        continue
+                    ret, frame = cap.read()
                 if ret and frame is not None:
                     with self._lock:
                         state.latest_frame = frame

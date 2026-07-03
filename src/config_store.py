@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -12,31 +14,6 @@ import yaml
 
 from .camera_config import normalize_config
 from .io.assignments import normalize_io_assignments
-
-
-def _validate_wizard_step3(cfg: dict) -> None:
-    """STEP3 工具校验：启用工具所用 CAM# 必须存在主控图像路径。"""
-    cal = cfg.get("calibration") or {}
-    masters = cal.get("masters") or {}
-    master_image = cal.get("master_image")
-
-    def _has_master(slot: int) -> bool:
-        if str(slot) in masters:
-            return True
-        # 兼容旧字段：master_image 仅对应 CAM#0
-        return slot == 0 and bool(master_image)
-
-    for t in cfg.get("tools") or []:
-        if not isinstance(t, dict):
-            continue
-        if t.get("enabled") is False:
-            continue
-        try:
-            slot = int(t.get("cam", 0))
-        except (TypeError, ValueError):
-            slot = 0
-        if not _has_master(slot):
-            raise ValueError(f"缺少 CAM#{slot} 主控图像")
 
 
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+\.yaml$")
@@ -129,6 +106,72 @@ def _copy_masters_for_profile(
             shutil.copy2(src, dest)
 
 
+def _backup_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.bak")
+
+
+def _merge_preserve_tools(existing: dict, incoming: dict, *, allow_clear: bool = False) -> dict:
+    """防止意外用空 tools 覆盖已有检测工具配置。"""
+    result = copy.deepcopy(incoming)
+    if allow_clear or "tools" not in result:
+        return result
+    new_tools = result.get("tools")
+    old_tools = (existing or {}).get("tools") or []
+    if isinstance(new_tools, list) and not new_tools and old_tools:
+        result["tools"] = copy.deepcopy(old_tools)
+    return result
+
+
+def _try_restore_tools_from_backup(path: Path, cfg: dict) -> dict:
+    """主配置 tools 为空时，尝试从 .bak 恢复（应对崩溃中途写盘）。"""
+    if cfg.get("tools"):
+        return cfg
+    bak = _backup_path(path)
+    if not bak.is_file():
+        return cfg
+    try:
+        with open(bak, encoding="utf-8") as f:
+            bak_cfg = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return cfg
+    bak_tools = bak_cfg.get("tools") or []
+    if not bak_tools:
+        return cfg
+    restored = copy.deepcopy(cfg)
+    restored["tools"] = bak_tools
+    return restored
+
+
+def _atomic_write_yaml(path: Path, data: dict) -> dict:
+    """原子写入 YAML，并在覆盖前保留 .bak 备份。"""
+    normalized = normalize_config(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.stem}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(
+                normalized,
+                f,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+        if path.exists():
+            shutil.copy2(path, _backup_path(path))
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+    return normalized
+
+
 def _load_profile_file(config_dir: Path, name: str) -> dict:
     path = config_dir / name
     if not path.exists():
@@ -139,11 +182,7 @@ def _load_profile_file(config_dir: Path, name: str) -> dict:
 
 def _save_profile_file(config_dir: Path, name: str, data: dict) -> dict:
     path = config_dir / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    normalized = normalize_config(data)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(normalized, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    return normalized
+    return _atomic_write_yaml(path, data)
 
 
 class ConfigStore:
@@ -187,16 +226,25 @@ class ConfigStore:
         if not path.exists():
             raise FileNotFoundError(f"配置不存在: {path}")
         with open(path, "r", encoding="utf-8") as f:
-            self._cache = normalize_config(yaml.safe_load(f) or {})
+            raw = yaml.safe_load(f) or {}
+        cfg = normalize_config(raw)
+        restored = _try_restore_tools_from_backup(path, cfg)
+        if restored.get("tools") and not (raw.get("tools") or []):
+            _atomic_write_yaml(path, restored)
+        self._cache = restored
         return self._cache
 
-    def save(self, data: dict) -> None:
+    def save(self, data: dict, *, allow_tools_clear: bool = False) -> None:
         path = self.active_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        normalized = normalize_config(data)
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(normalized, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        self._cache = normalized
+        existing = self._cache
+        if existing is None and path.exists():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    existing = normalize_config(yaml.safe_load(f) or {})
+            except (OSError, yaml.YAMLError):
+                existing = {}
+        data = _merge_preserve_tools(existing or {}, data, allow_clear=allow_tools_clear)
+        self._cache = _atomic_write_yaml(path, data)
 
     def get_cached(self) -> dict:
         if self._cache is None:
@@ -230,13 +278,17 @@ class ConfigStore:
 
     def save_wizard_step(self, step: int, fragment: dict) -> dict:
         cfg = self.get_cached()
+        allow_clear = bool(fragment.pop("allow_tools_clear", False))
+        if "tools" in fragment and not allow_clear:
+            new_tools = fragment.get("tools")
+            old_tools = cfg.get("tools") or []
+            if isinstance(new_tools, list) and not new_tools and old_tools:
+                fragment = {k: v for k, v in fragment.items() if k != "tools"}
         for key, val in fragment.items():
             if isinstance(val, dict) and isinstance(cfg.get(key), dict):
                 cfg[key] = {**cfg.get(key, {}), **val}
             else:
                 cfg[key] = val
-        if step == 3:
-            _validate_wizard_step3(cfg)
         if step == 4:
             cfg["io"] = normalize_io_assignments(cfg.get("io", {}), tools=cfg.get("tools"))
         self.save(cfg)

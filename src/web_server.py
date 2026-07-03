@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from .calibration import CalibrationService
 from .camera_config import available_camera_ids, camera_id_to_cam_slot, slot_device_ids
-from .camera_service import CameraService, enumerate_camera_devices
+from .camera_service import CameraService
 from .config_store import ConfigStore
 from .display_images import (
     build_tool_binary_image,
@@ -365,12 +365,42 @@ async def _connect_camera_with_retry() -> bool:
     return False
 
 
+async def _connect_io_with_retry() -> bool:
+    """启动时连接 Modbus，指数退避重试（异常退出后串口/COM 可能短暂被占用）。"""
+    if not state.io.enabled:
+        return False
+    io_cfg = state.io.cfg
+    retries = max(1, int(io_cfg.get("connect_retries", 3)))
+    base_delay = max(0.0, float(io_cfg.get("connect_retry_delay_s", 1.0)))
+    backoff = [base_delay, base_delay * 2, base_delay * 4]
+    for attempt in range(retries):
+        if attempt > 0:
+            delay = backoff[min(attempt - 1, len(backoff) - 1)]
+            logger.info(
+                "Modbus 连接重试 %s/%s，等待 %ss（上次异常退出时串口可能尚未释放）",
+                attempt + 1,
+                retries,
+                delay,
+            )
+            await asyncio.sleep(delay)
+        ok = await asyncio.to_thread(state.io.connect)
+        if ok:
+            return True
+    return False
+
+
 async def _startup_hardware() -> None:
-    """后台连接相机，避免阻塞 WebSocket 握手。Modbus 连接由 IO 轮询循环负责。"""
+    """后台连接相机与 Modbus，避免阻塞 WebSocket 握手。"""
     try:
         cam_ok = await _connect_camera_with_retry()
         if not cam_ok:
             logger.warning("相机初始连接失败，健康检查任务将周期性重试")
+        if state.io.enabled:
+            io_ok = await _connect_io_with_retry()
+            if io_ok:
+                await state._sync_running_output()
+            else:
+                logger.warning("Modbus 初始连接失败，IO 轮询将周期性重试")
         state._ensure_camera_health_task()
         state._last_frame_payload = json_safe(
             await asyncio.to_thread(state.build_idle_payload)
@@ -547,6 +577,31 @@ async def _camera_health_loop():
             await asyncio.sleep(2.0)
 
 
+def _trigger_delay_seconds(config: dict) -> float:
+    raw = (config.get("trigger") or {}).get("delay_ms", 0)
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        ms = 0
+    return max(0, min(ms, 10_000)) / 1000.0
+
+
+async def _io_handle_trigger_edge() -> None:
+    """外部 IO 上升沿：可选延迟后采图检测（软触发不走此路径）。"""
+    io = state.io
+    io.busy = True
+    try:
+        cfg = state.config_store.get_cached()
+        delay_s = _trigger_delay_seconds(cfg)
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
+        state._preview_paused_until = time.monotonic() + PREVIEW_PAUSE_AFTER_TRIGGER_SEC
+        payload = await asyncio.to_thread(_trigger_capture_and_detect)
+        await state.broadcast(payload)
+    finally:
+        io.busy = False
+
+
 async def _io_poll_loop():
     """Modbus 输入轮询：分配表上升沿触发检测 / 切换程序等，断线自动重连。"""
     last_reconnect = 0.0
@@ -575,13 +630,7 @@ async def _io_poll_loop():
             edges = await asyncio.to_thread(io.poll_input_edges)
             for _index, role in edges:
                 if role == "trigger":
-                    io.busy = True
-                    try:
-                        state._preview_paused_until = time.monotonic() + PREVIEW_PAUSE_AFTER_TRIGGER_SEC
-                        payload = await asyncio.to_thread(_trigger_capture_and_detect)
-                        await state.broadcast(payload)
-                    finally:
-                        io.busy = False
+                    await _io_handle_trigger_edge()
                     break
                 if role == "switch_program":
                     await _handle_io_switch_program()
@@ -717,10 +766,9 @@ async def camera_options():
 
 @app.get("/api/cameras/enumerate")
 async def cameras_enumerate(max_probe: int = 10):
-    """枚举本机可打开的相机设备（OpenCV 设备索引）。"""
+    """枚举本机可打开的相机设备（OpenCV 设备索引），含诊断信息。"""
     limit = max(1, min(32, int(max_probe)))
-    devices = await asyncio.to_thread(enumerate_camera_devices, max_probe=limit)
-    return {"count": len(devices), "devices": devices}
+    return await asyncio.to_thread(state.camera.enumerate_devices_detail, max_probe=limit)
 
 
 @app.get("/api/device")

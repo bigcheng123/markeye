@@ -76,7 +76,7 @@ def test_save_wizard_step3_dual_tools_preserve_cam_and_roi(store, tmp_path):
     assert loaded["tools"][1]["cam"] == 1
 
 
-def test_save_wizard_step3_rejects_missing_master_for_cam(store, tmp_path):
+def test_save_wizard_step3_allows_missing_master_for_cam(store, tmp_path):
     master0 = tmp_path / "m0.jpg"
     master0.write_bytes(b"x")
     store.save(
@@ -95,8 +95,50 @@ def test_save_wizard_step3_rejects_missing_master_for_cam(store, tmp_path):
             "params": {"h_lower": [0, 50, 50], "h_upper": [180, 255, 255]},
         },
     ]
-    with pytest.raises(ValueError, match="CAM#1"):
-        store.save_wizard_step(3, {"tools": tools})
+    cfg = store.save_wizard_step(3, {"tools": tools})
+    assert len(cfg["tools"]) == 1
+    assert cfg["tools"][0]["cam"] == 1
+
+
+def test_save_preserves_tools_when_incoming_empty(store):
+    tools = [{"id": "01", "cam": 0, "type": "hsv_roi", "enabled": True, "name": "色彩识别"}]
+    store.save({"tools": tools, "input": {"camera_id": 0}})
+    store.save({"tools": [], "input": {"camera_id": 0}})
+    cfg = store.get_cached()
+    assert cfg["tools"] == tools
+
+
+def test_save_wizard_step3_preserves_tools_when_empty_fragment(store):
+    tools = [{"id": "01", "cam": 0, "type": "hsv_roi", "enabled": True, "name": "色彩识别"}]
+    store.save({"tools": tools})
+    cfg = store.save_wizard_step(3, {"tools": []})
+    assert cfg["tools"] == tools
+
+
+def test_load_restores_tools_from_backup(store):
+    tools = [{"id": "01", "cam": 0, "type": "hsv_roi", "enabled": True, "name": "色彩识别"}]
+    store.save({"tools": tools, "input": {"camera_id": 0}})
+    # simulate crash leaving tools empty on disk
+    path = store.active_path
+    store.save({"tools": [], "input": {"camera_id": 0}}, allow_tools_clear=True)
+    assert store.get_cached()["tools"] == []
+
+    bak = path.with_name(f"{path.name}.bak")
+    assert bak.is_file()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("tools: []\ninput:\n  camera_id: 0\n")
+
+    store._cache = None
+    loaded = store.load()
+    assert len(loaded["tools"]) == 1
+    assert loaded["tools"][0]["id"] == "01"
+
+
+def test_atomic_save_creates_backup(store):
+    store.save({"tools": [{"id": "01", "cam": 0, "type": "hsv_roi", "enabled": True}], "input": {"camera_id": 0}})
+    store.save({"input": {"camera_id": 1}})
+    bak = store.active_path.with_name(f"{store.active_path.name}.bak")
+    assert bak.is_file()
 
 
 def test_get_wizard_step4_includes_tools(store):

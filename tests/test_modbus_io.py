@@ -118,7 +118,7 @@ def test_write_result_ok_does_not_pulse_result_ng(mock_client):
     mock_client.write_coil.reset_mock()
     svc.write_result(True)
     for call in mock_client.write_coil.call_args_list:
-        assert call.args[0] != 1
+        assert call.args[0] != 1 or call.args[1] is False
 
 
 def test_write_result_ng_pulses_y2_on(mock_client):
@@ -127,6 +127,48 @@ def test_write_result_ng_pulses_y2_on(mock_client):
     mock_client.write_coil.reset_mock()
     svc.write_result(False)
     mock_client.write_coil.assert_called_with(1, True, device_id=1)
+
+
+def test_write_result_ng_uses_hold_duration_for_result_ng(mock_client, monkeypatch):
+    cfg = _rtu_config(
+        output_pulse_ms=100,
+        result_ng_hold_ms=3000,
+        output_assignments=[
+            "link_ok",
+            "result_ng",
+            "tool:02",
+            "off",
+            "off",
+            "off",
+            "off",
+            "off",
+        ],
+    )
+    svc = ModbusIOService(cfg)
+    svc.connect()
+    scheduled: list[tuple[int, float]] = []
+
+    def fake_schedule(addr, delay_s):
+        scheduled.append((addr, delay_s))
+
+    monkeypatch.setattr(svc, "_schedule_coil_off", fake_schedule)
+    mock_client.write_coil.reset_mock()
+    svc.write_result(
+        False,
+        tool_results=[{"tool": "02", "passed": False}],
+    )
+    assert (1, 3.0) in scheduled
+    assert (2, 0.1) in scheduled
+
+
+def test_write_result_ok_turns_off_result_ng_immediately(mock_client):
+    svc = ModbusIOService(_rtu_config())
+    svc.connect()
+    mock_client.write_coil.reset_mock()
+    svc.write_result(False)
+    mock_client.write_coil.reset_mock()
+    svc.write_result(True)
+    mock_client.write_coil.assert_any_call(1, False, device_id=1)
 
 
 def test_set_running_writes_assigned_coil(mock_client):
@@ -227,9 +269,10 @@ def test_write_result_with_tool_outputs(mock_client):
     ]
     svc.write_result(True, tool_results=tool_results)
     mock_client.write_coil.assert_any_call(2, True, device_id=1)
+    mock_client.write_coil.assert_any_call(1, False, device_id=1)
     for call in mock_client.write_coil.call_args_list:
-        assert call.args != (1, False)
-        assert call.args != (3, False)
+        assert call.args != (1, True)
+        assert call.args != (3, True)
 
 
 def test_poll_input_edges_switch_program(mock_client):

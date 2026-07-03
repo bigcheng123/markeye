@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -62,3 +63,88 @@ def test_fallback_does_not_use_master_image(tmp_path):
 
     assert frame is not None
     assert int(frame[0, 0, 0]) == 120
+
+
+def test_enumerate_devices_includes_connected_slot():
+    svc = CameraService({})
+    cap = MagicMock()
+    cap.get.side_effect = lambda prop: {
+        3: 1280.0,  # CAP_PROP_FRAME_WIDTH
+        4: 720.0,   # CAP_PROP_FRAME_HEIGHT
+    }.get(prop, 0.0)
+    cap.getBackendName.return_value = "V4L2"
+
+    slot = svc._slots[0]
+    slot.device_id = 2
+    slot.connected = True
+    slot.cap = cap
+
+    with patch("src.camera_service.probe_camera_diagnostic") as probe:
+        probe.return_value = (
+            {"device_id": 0, "opened": False, "read_ok": False, "reason": "not_found"},
+            None,
+        )
+        devices = svc.enumerate_devices(max_probe=4)
+
+    probed_ids = [call.args[0] for call in probe.call_args_list]
+    assert 2 not in probed_ids
+    assert len(devices) == 1
+    assert devices[0]["device_id"] == 2
+    assert devices[0]["width"] == 1280
+    assert devices[0]["height"] == 720
+    assert devices[0]["backend"] == "V4L2"
+    assert devices[0]["accessible"] is True
+
+
+def test_enumerate_devices_probes_unconnected_indices():
+    svc = CameraService({})
+    probe_cap = MagicMock()
+    probe_cap.get.side_effect = lambda prop: {
+        3: 640.0,
+        4: 480.0,
+    }.get(prop, 0.0)
+    probe_cap.getBackendName.return_value = "DSHOW"
+
+    with patch("src.camera_service.probe_camera_diagnostic") as probe:
+        probe.side_effect = lambda device_id, **_: (
+            {
+                "device_id": device_id,
+                "opened": device_id == 1,
+                "read_ok": device_id == 1,
+                "backend": "DSHOW" if device_id == 1 else None,
+                "reason": "ok" if device_id == 1 else "not_found",
+            },
+            probe_cap if device_id == 1 else None,
+        )
+        devices = svc.enumerate_devices(max_probe=3)
+
+    assert [d["device_id"] for d in devices] == [1]
+    assert devices[0]["width"] == 640
+    probe_cap.release.assert_called_once()
+
+
+def test_enumerate_devices_detail_includes_diagnostics():
+    svc = CameraService({})
+    with patch("src.camera_service.probe_camera_diagnostic") as probe:
+        probe.return_value = (
+            {"device_id": 0, "opened": False, "read_ok": False, "reason": "open_failed"},
+            None,
+        )
+        result = svc.enumerate_devices_detail(max_probe=1)
+
+    assert result["count"] == 0
+    assert result["devices"] == []
+    assert len(result["diagnostics"]) == 1
+    assert result["diagnostics"][0]["reason"] == "open_failed"
+    assert "hints" in result
+
+
+def test_connect_succeeds_when_any_slot_connects():
+    svc = CameraService({"input": {"cameras": [0, 1]}})
+    with patch.object(svc, "connect_all", return_value={0: True, 1: False}):
+        assert svc.connect() is True
+
+
+def test_probe_timeout_from_config():
+    svc = CameraService({"input": {"probe_timeout_s": 5.5}})
+    assert svc._probe_timeout_s() == 5.5

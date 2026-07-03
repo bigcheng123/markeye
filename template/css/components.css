@@ -1377,6 +1377,14 @@
   background: #fafafa;
 }
 
+.camera-enum-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-sm);
+  border-top: 1px solid var(--color-border);
+}
+
 .modal__title {
   font-weight: 700;
   margin-bottom: var(--spacing-sm);

@@ -20,6 +20,7 @@ logger = logging.getLogger("markeye.io")
 
 _PARITY_MAP = {"N": "N", "E": "E", "O": "O", "NONE": "N", "EVEN": "E", "ODD": "O"}
 DEFAULT_OUTPUT_PULSE_MS = 200
+DEFAULT_RESULT_NG_HOLD_MS = 3000
 
 
 class ModbusIOService:
@@ -232,6 +233,13 @@ class ModbusIOService:
             ms = DEFAULT_OUTPUT_PULSE_MS
         return ms / 1000.0
 
+    def _output_ng_hold_s(self) -> float:
+        """综合判断 NG 保持时长（秒）；配置 0 或未设时使用 DEFAULT_RESULT_NG_HOLD_MS。"""
+        ms = int(self.cfg.get("result_ng_hold_ms", DEFAULT_RESULT_NG_HOLD_MS) or 0)
+        if ms <= 0:
+            ms = DEFAULT_RESULT_NG_HOLD_MS
+        return ms / 1000.0
+
     def _schedule_coil_off(self, addr: int, delay_s: float) -> None:
         def _off():
             self.write_coil(addr, False)
@@ -277,9 +285,14 @@ class ModbusIOService:
             self._mark_disconnected()
             return False
 
-    def apply_output_states(self, states: dict[int, bool]) -> None:
-        """动作输出：仅对 True 点动，False 不写线圈（由点动定时器自动回 OFF）。"""
+    def apply_output_states(
+        self,
+        states: dict[int, bool],
+        hold_overrides: dict[int, float] | None = None,
+    ) -> None:
+        """动作输出：True 点动/保持后自动回 OFF；False 取消定时器并主动写 OFF。"""
         pulse_s = self._output_pulse_s()
+        overrides = hold_overrides or {}
         for address, value in states.items():
             addr = int(address)
             if not bool(value):
@@ -290,9 +303,11 @@ class ModbusIOService:
                             old.cancel()
                         except Exception:
                             pass
+                self.write_coil(addr, False)
                 continue
             if self.write_coil(addr, True):
-                self._schedule_coil_off(addr, pulse_s)
+                delay_s = overrides.get(addr, pulse_s)
+                self._schedule_coil_off(addr, delay_s)
 
     def _mark_disconnected(self) -> None:
         self._connected = False
@@ -401,7 +416,11 @@ class ModbusIOService:
             logger.debug("IO mock: output states %s", states)
             return
         if states:
-            self.apply_output_states(states)
+            ng_idx = resolve_output_index(self.output_assignments, "result_ng")
+            overrides: dict[int, float] = {}
+            if ng_idx is not None:
+                overrides[ng_idx] = self._output_ng_hold_s()
+            self.apply_output_states(states, overrides)
 
     def set_running(self, running: bool) -> None:
         """运行中线圈：ON=程序处于运行模式。"""

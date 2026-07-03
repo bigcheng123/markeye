@@ -565,17 +565,27 @@ def test_config_delete_active_rejected(client):
 
 
 def test_cameras_enumerate(client, monkeypatch):
-    sample = [
-        {
-            "device_id": 0,
-            "model": "Test Cam",
-            "backend": "MOCK",
-            "width": 640,
-            "height": 480,
-            "accessible": True,
-        }
-    ]
-    monkeypatch.setattr(web_server, "enumerate_camera_devices", lambda **_: sample)
+    sample = {
+        "count": 1,
+        "devices": [
+            {
+                "device_id": 0,
+                "model": "Test Cam",
+                "backend": "MOCK",
+                "width": 640,
+                "height": 480,
+                "accessible": True,
+            }
+        ],
+        "diagnostics": [],
+        "hints": [],
+        "v4l2_nodes": [],
+    }
+    monkeypatch.setattr(
+        web_server.state.camera,
+        "enumerate_devices_detail",
+        lambda *, max_probe=10: sample,
+    )
 
     res = client.get("/api/cameras/enumerate")
     assert res.status_code == 200
@@ -583,6 +593,7 @@ def test_cameras_enumerate(client, monkeypatch):
     assert data["count"] == 1
     assert data["devices"][0]["device_id"] == 0
     assert data["devices"][0]["model"] == "Test Cam"
+    assert data["hints"] == []
 
 
 def test_camera_snapshot_without_active_tools(client, sample_image):
@@ -656,3 +667,133 @@ def test_camera_snapshot_with_empty_tools_list(client, sample_image):
     data = res.json()
     assert data["device_id"] == 0
     assert data["image_base64"]
+
+
+def test_connect_io_with_retry_backoff(monkeypatch):
+    """启动时应主动重连 Modbus，而非仅依赖 IO 轮询。"""
+    import asyncio
+
+    attempts = []
+
+    class FakeIO:
+        enabled = True
+        cfg = {"connect_retries": 3, "connect_retry_delay_s": 0}
+
+        def connect(self):
+            attempts.append(1)
+            return len(attempts) >= 2
+
+    web_server.state.io = FakeIO()
+    async def _noop_sleep(_s):
+        return None
+
+    monkeypatch.setattr(web_server.asyncio, "sleep", _noop_sleep)
+
+    ok = asyncio.run(web_server._connect_io_with_retry())
+    assert ok is True
+    assert len(attempts) == 2
+
+
+def test_connect_io_with_retry_skips_when_disabled():
+    import asyncio
+
+    class FakeIO:
+        enabled = False
+        cfg = {}
+
+    web_server.state.io = FakeIO()
+    ok = asyncio.run(web_server._connect_io_with_retry())
+    assert ok is False
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({}, 0.0),
+        ({"trigger": {"delay_ms": 0}}, 0.0),
+        ({"trigger": {"delay_ms": 2000}}, 2.0),
+        ({"trigger": {"delay_ms": -100}}, 0.0),
+        ({"trigger": {"delay_ms": "bad"}}, 0.0),
+        ({"trigger": {"delay_ms": 99_999}}, 10.0),
+    ],
+)
+def test_trigger_delay_seconds(config, expected):
+    assert web_server._trigger_delay_seconds(config) == expected
+
+
+def test_io_handle_trigger_edge_waits_delay(monkeypatch):
+    import asyncio
+
+    cfg = web_server.state.config_store.get_cached()
+    cfg["trigger"] = {"source": "external", "delay_ms": 500}
+    web_server.state.config_store.save(cfg)
+
+    sleep_calls = []
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(web_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        web_server,
+        "_trigger_capture_and_detect",
+        lambda **kwargs: {"type": "frame", "idle": True},
+    )
+
+    async def noop_broadcast(_payload):
+        return None
+
+    monkeypatch.setattr(web_server.state, "broadcast", noop_broadcast)
+
+    asyncio.run(web_server._io_handle_trigger_edge())
+
+    assert sleep_calls == [0.5]
+    assert web_server.state.io.busy is False
+
+
+def test_io_handle_trigger_edge_skips_sleep_when_zero(monkeypatch):
+    import asyncio
+
+    cfg = web_server.state.config_store.get_cached()
+    cfg["trigger"] = {"source": "external", "delay_ms": 0}
+    web_server.state.config_store.save(cfg)
+
+    sleep_calls = []
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(web_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        web_server,
+        "_trigger_capture_and_detect",
+        lambda **kwargs: {"type": "frame", "idle": True},
+    )
+
+    async def noop_broadcast(_payload):
+        return None
+
+    monkeypatch.setattr(web_server.state, "broadcast", noop_broadcast)
+
+    asyncio.run(web_server._io_handle_trigger_edge())
+
+    assert sleep_calls == []
+    assert web_server.state.io.busy is False
+
+
+def test_api_trigger_ignores_delay(client, monkeypatch):
+    cfg = web_server.state.config_store.get_cached()
+    cfg["trigger"] = {"source": "external", "delay_ms": 2000}
+    web_server.state.config_store.save(cfg)
+
+    sleep_calls = []
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(web_server.asyncio, "sleep", fake_sleep)
+
+    res = client.post("/api/trigger")
+    assert res.status_code == 200
+    assert sleep_calls == []
+
