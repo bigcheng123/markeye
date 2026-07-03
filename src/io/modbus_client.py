@@ -19,6 +19,7 @@ from .assignments import (
 logger = logging.getLogger("markeye.io")
 
 _PARITY_MAP = {"N": "N", "E": "E", "O": "O", "NONE": "N", "EVEN": "E", "ODD": "O"}
+DEFAULT_OUTPUT_PULSE_MS = 200
 
 
 class ModbusIOService:
@@ -224,6 +225,37 @@ class ModbusIOService:
             self.set_link_ok(False)
         self._release_client()
 
+    def _output_pulse_s(self) -> float:
+        """动作输出点动时长（秒）；配置 0 或未设时使用 DEFAULT_OUTPUT_PULSE_MS。"""
+        ms = int(self.cfg.get("output_pulse_ms", DEFAULT_OUTPUT_PULSE_MS) or 0)
+        if ms <= 0:
+            ms = DEFAULT_OUTPUT_PULSE_MS
+        return ms / 1000.0
+
+    def _schedule_coil_off(self, addr: int, delay_s: float) -> None:
+        def _off():
+            self.write_coil(addr, False)
+
+        timer = threading.Timer(delay_s, _off)
+        timer.daemon = True
+        with self._pulse_lock:
+            old = self._pulse_timers.get(addr)
+            if old:
+                try:
+                    old.cancel()
+                except Exception:
+                    pass
+            self._pulse_timers[addr] = timer
+        timer.start()
+
+    def pulse_coil(self, address: int) -> bool:
+        """单次点动：写 ON 后延时自动回 OFF（用于检测结果/工具/联调输出）。"""
+        addr = int(address)
+        if not self.write_coil(addr, True):
+            return False
+        self._schedule_coil_off(addr, self._output_pulse_s())
+        return True
+
     def write_coil(self, address: int, value: bool) -> bool:
         if not self.enabled:
             logger.debug("IO mock: coil[%s]=%s", address, value)
@@ -246,29 +278,11 @@ class ModbusIOService:
             return False
 
     def apply_output_states(self, states: dict[int, bool]) -> None:
-        pulse_ms = int(self.cfg.get("output_pulse_ms") or 0)
-
-        def _schedule_off(addr: int, delay_s: float) -> None:
-            def _off():
-                # 定时回写 OFF：若此时已断线则 write_coil 会失败并标记断线
-                self.write_coil(addr, False)
-
-            timer = threading.Timer(delay_s, _off)
-            timer.daemon = True
-            with self._pulse_lock:
-                old = self._pulse_timers.get(addr)
-                if old:
-                    try:
-                        old.cancel()
-                    except Exception:
-                        pass
-                self._pulse_timers[addr] = timer
-            timer.start()
-
+        """动作输出：仅对 True 点动，False 不写线圈（由点动定时器自动回 OFF）。"""
+        pulse_s = self._output_pulse_s()
         for address, value in states.items():
             addr = int(address)
-            val = bool(value)
-            if not val:
+            if not bool(value):
                 with self._pulse_lock:
                     old = self._pulse_timers.pop(addr, None)
                     if old:
@@ -276,15 +290,9 @@ class ModbusIOService:
                             old.cancel()
                         except Exception:
                             pass
-                self.write_coil(addr, False)
                 continue
-
-            # val=True
-            if pulse_ms > 0:
-                if self.write_coil(addr, True):
-                    _schedule_off(addr, pulse_ms / 1000.0)
-            else:
-                self.write_coil(addr, True)
+            if self.write_coil(addr, True):
+                self._schedule_coil_off(addr, pulse_s)
 
     def _mark_disconnected(self) -> None:
         self._connected = False
@@ -346,9 +354,18 @@ class ModbusIOService:
         }
 
     def test_output(self, channel: int, value: bool) -> bool:
-        """联调：写单路线圈（FC05）。"""
+        """联调：写单路线圈（True=点动，False=强制 OFF）。"""
         ch = max(0, min(IO_CHANNEL_COUNT - 1, int(channel)))
-        return self.write_coil(ch, bool(value))
+        if value:
+            return self.pulse_coil(ch)
+        with self._pulse_lock:
+            old = self._pulse_timers.pop(ch, None)
+            if old:
+                try:
+                    old.cancel()
+                except Exception:
+                    pass
+        return self.write_coil(ch, False)
 
     def set_link_ok(self, ok: bool) -> None:
         """通信成功线圈：ON=连接正常。"""

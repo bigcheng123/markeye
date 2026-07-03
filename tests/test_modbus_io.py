@@ -112,15 +112,16 @@ def test_busy_suppresses_trigger(mock_client):
     assert svc.poll_trigger_edges() is False
 
 
-def test_write_result_ok_writes_y2_off(mock_client):
+def test_write_result_ok_does_not_pulse_result_ng(mock_client):
     svc = ModbusIOService(_rtu_config())
     svc.connect()
     mock_client.write_coil.reset_mock()
     svc.write_result(True)
-    mock_client.write_coil.assert_called_with(1, False, device_id=1)
+    for call in mock_client.write_coil.call_args_list:
+        assert call.args[0] != 1
 
 
-def test_write_result_ng_writes_y2_on(mock_client):
+def test_write_result_ng_pulses_y2_on(mock_client):
     svc = ModbusIOService(_rtu_config())
     svc.connect()
     mock_client.write_coil.reset_mock()
@@ -225,9 +226,10 @@ def test_write_result_with_tool_outputs(mock_client):
         {"tool": "02", "passed": False},
     ]
     svc.write_result(True, tool_results=tool_results)
-    mock_client.write_coil.assert_any_call(1, False, device_id=1)
     mock_client.write_coil.assert_any_call(2, True, device_id=1)
-    mock_client.write_coil.assert_any_call(3, False, device_id=1)
+    for call in mock_client.write_coil.call_args_list:
+        assert call.args != (1, False)
+        assert call.args != (3, False)
 
 
 def test_poll_input_edges_switch_program(mock_client):
@@ -283,12 +285,28 @@ def test_read_coils_and_channel_states(mock_client):
     assert states["input_bits"] == [False] * 8
 
 
-def test_test_output_writes_coil(mock_client):
+def test_test_output_pulses_coil(mock_client):
     svc = ModbusIOService(_rtu_config())
     svc.connect()
     mock_client.write_coil.reset_mock()
     assert svc.test_output(2, True) is True
     mock_client.write_coil.assert_called_with(2, True, device_id=1)
+    assert 2 in svc._pulse_timers
+
+
+def test_pulse_coil_schedules_off(mock_client, monkeypatch):
+    svc = ModbusIOService(_rtu_config(output_pulse_ms=100))
+    svc.connect()
+    scheduled: list[tuple[int, float]] = []
+
+    def fake_schedule(addr, delay_s):
+        scheduled.append((addr, delay_s))
+
+    monkeypatch.setattr(svc, "_schedule_coil_off", fake_schedule)
+    mock_client.write_coil.reset_mock()
+    assert svc.pulse_coil(3) is True
+    mock_client.write_coil.assert_called_with(3, True, device_id=1)
+    assert scheduled == [(3, 0.1)]
 
 
 def test_write_coil_none_result_marks_disconnected(mock_client):

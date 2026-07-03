@@ -1,7 +1,7 @@
 input:
   cameras:
   - 0
-  - 1
+  - 2
   camera_id: 0
   fallback_image: ui/ui_sample/target.PNG
   exposure: 50
@@ -173,7 +173,7 @@ io:
   host: 127.0.0.1
   port: 502
   unit_id: 1
-  output_pulse_ms: 1000
+  output_pulse_ms: 200
   outputs:
     ok: null
     ng: null
@@ -190,7 +190,7 @@ io:
   trerr_enabled: true
   transport: rtu
   serial_port: /dev/ttyUSB0
-  poll_interval_ms: 500
+  poll_interval_ms: 50
   reconnect_interval_s: 3
   connect_retries: 3
   connect_retry_delay_s: 1.0
@@ -216,7 +216,7 @@ io:
   bytesize: 8
   parity: N
   stopbits: 1
-  timeout_s: 1.5
+  timeout_s: 1.0
   retries: 3
   inputs:
     trigger_bits:

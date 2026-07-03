@@ -993,8 +993,8 @@ export class Wizard {
             <div class="wizard-form-row"><label>轮询间隔 (ms)</label>
               <input type="number" data-field="io-poll-interval" value="${io.poll_interval_ms ?? 50}" min="10" max="5000" />
             </div>
-            <div class="wizard-form-row"><label>输出保持 (ms)</label>
-              <input type="number" data-field="io-output-pulse-ms" value="${io.output_pulse_ms ?? 0}" min="0" max="10000" />
+            <div class="wizard-form-row"><label>输出点动 (ms)</label>
+              <input type="number" data-field="io-output-pulse-ms" value="${io.output_pulse_ms ?? 200}" min="0" max="10000" />
             </div>
             <div class="wizard-form-row"><label>重连间隔 (s)</label>
               <input type="number" data-field="io-reconnect-interval" value="${io.reconnect_interval_s ?? 3}" min="1" max="60" />
