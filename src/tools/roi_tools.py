@@ -22,6 +22,33 @@ def _clamp_int(v: Any, lo: int, hi: int, default: int = 0) -> int:
     return max(lo, min(hi, iv))
 
 
+# OpenCV HSV: H 0–180, S/V 0–255（与 inRange 及前端 wizard 一致）
+_OPENCV_HSV_LIMITS = ((0, 180), (0, 255), (0, 255))
+_DEFAULT_HSV_LOWER = (0, 0, 0)
+_DEFAULT_HSV_UPPER = (180, 255, 255)
+
+
+def _normalize_hsv_triplet(
+    values: Any,
+    defaults: tuple[int, int, int],
+) -> list[int]:
+    if not isinstance(values, (list, tuple)) or len(values) != 3:
+        return list(defaults)
+    return [
+        _clamp_int(values[i], *_OPENCV_HSV_LIMITS[i], defaults[i]) for i in range(3)
+    ]
+
+
+def _parse_hsv_bounds(params: dict) -> tuple[list[int], list[int]]:
+    params = params or {}
+    lower = params.get("h_lower") or params.get("lower") or list(_DEFAULT_HSV_LOWER)
+    upper = params.get("h_upper") or params.get("upper") or list(_DEFAULT_HSV_UPPER)
+    return (
+        _normalize_hsv_triplet(lower, _DEFAULT_HSV_LOWER),
+        _normalize_hsv_triplet(upper, _DEFAULT_HSV_UPPER),
+    )
+
+
 def crop_roi(img: np.ndarray, roi: dict) -> RoiCrop:
     """按固定像素坐标裁剪 ROI。circle 会返回 mask。"""
     h, w = img.shape[:2]
@@ -100,10 +127,9 @@ def hsv_hit_mask(img: np.ndarray, tool: dict) -> np.ndarray:
     canvas = np.zeros((h, w), dtype=np.uint8)
     roi = (tool or {}).get("roi", {}) or {}
     params = (tool or {}).get("params", {}) or {}
-    lower = params.get("h_lower") or params.get("lower") or [0, 0, 0]
-    upper = params.get("h_upper") or params.get("upper") or [180, 255, 255]
-    lower = np.array([int(lower[0]), int(lower[1]), int(lower[2])], dtype=np.uint8)
-    upper = np.array([int(upper[0]), int(upper[1]), int(upper[2])], dtype=np.uint8)
+    lower, upper = _parse_hsv_bounds(params)
+    lower = np.array(lower, dtype=np.uint8)
+    upper = np.array(upper, dtype=np.uint8)
 
     crop = crop_roi(img, roi)
     if crop.img.size == 0:
@@ -138,8 +164,8 @@ def compute_hsv_area_in_roi(
     if crop.img.size == 0:
         return {"match": 0, "total": 0, "ratio": 0.0}
 
-    lower = np.array([int(h_lower[0]), int(h_lower[1]), int(h_lower[2])], dtype=np.uint8)
-    upper = np.array([int(h_upper[0]), int(h_upper[1]), int(h_upper[2])], dtype=np.uint8)
+    lower = np.array(_normalize_hsv_triplet(h_lower, _DEFAULT_HSV_LOWER), dtype=np.uint8)
+    upper = np.array(_normalize_hsv_triplet(h_upper, _DEFAULT_HSV_UPPER), dtype=np.uint8)
     hsv = cv2.cvtColor(crop.img, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, lower, upper)
     roi_mask = _roi_pixel_mask(crop)
@@ -165,10 +191,7 @@ def _parse_area_limit(value: Any, default: int) -> int:
 def run_hsv_roi_tool(img: np.ndarray, tool: dict) -> dict:
     roi = (tool or {}).get("roi", {}) or {}
     params = (tool or {}).get("params", {}) or {}
-    lower = params.get("h_lower") or params.get("lower") or [0, 0, 0]
-    upper = params.get("h_upper") or params.get("upper") or [180, 255, 255]
-    lower = [int(lower[0]), int(lower[1]), int(lower[2])] if len(lower) == 3 else [0, 0, 0]
-    upper = [int(upper[0]), int(upper[1]), int(upper[2])] if len(upper) == 3 else [180, 255, 255]
+    lower, upper = _parse_hsv_bounds(params)
 
     crop = crop_roi(img, roi)
     if crop.img.size == 0:

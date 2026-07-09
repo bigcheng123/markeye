@@ -103,6 +103,25 @@ def test_compute_hsv_area_orange():
     assert area["total"] == 40 * 40
 
 
+def test_hsv_roi_tool_clamps_out_of_range_bounds():
+    img = np.zeros((120, 160, 3), dtype=np.uint8)
+    img[40:80, 60:100] = (0, 255, 0)
+    tool = {
+        "id": "01",
+        "type": "hsv_roi",
+        "roi": {"shape": "rect", "x": 60, "y": 40, "w": 40, "h": 40},
+        "params": {
+            "h_lower": [35, 50, 50],
+            "h_upper": [85, 255, 280],
+            "match_area_min": 100,
+            "match_area_max": 2000,
+        },
+    }
+    r = run_hsv_roi_tool(img, tool)
+    assert r["passed"] is True
+    assert r["details"]["upper"] == [85, 255, 255]
+
+
 def test_compute_hsv_area_mismatch_is_zero():
     img = np.zeros((120, 160, 3), dtype=np.uint8)
     img[40:80, 60:100] = (0, 140, 255)
