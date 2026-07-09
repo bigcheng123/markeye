@@ -32,7 +32,8 @@ MarkEye **必须**在 Windows（开发调参）与 Linux（产线部署，Ubuntu
 |------|---------|---------------|
 | 开发启动 Web | `start_app.bat` | `start_app.sh` |
 | 停止 Web（8080） | `stop_app.bat` | `stop_app.sh` |
-| 产线 kiosk | — | `deploy/kiosk.sh` |
+| 产线 kiosk 验证 | — | `deploy/kiosk.sh` / `deploy/verify-kiosk.sh` |
+| 产线开机自启安装 | — | `sudo deploy/install-kiosk.sh` |
 
 ### 平台差异与限制
 

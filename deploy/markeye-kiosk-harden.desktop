@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MarkEye Kiosk Harden
+Comment=Disable screensaver and verify single backend instance
+Exec=/opt/markeye/deploy/kiosk-harden.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Phase=Initialization

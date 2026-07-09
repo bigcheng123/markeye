@@ -234,7 +234,9 @@ markeye/
 ├── start_app.sh               # Linux/macOS 启动 Web
 ├── stop_app.bat               # Windows 停止 Web
 ├── stop_app.sh                # Linux/macOS 停止 Web
-├── deploy/kiosk.sh            # Ubuntu 产线 kiosk
+├── deploy/kiosk.sh            # Ubuntu 产线 kiosk（阶段1验证）
+├── deploy/install-kiosk.sh    # 产线开机自启一键安装
+├── deploy/verify-kiosk.sh     # kiosk 环境验证
 ├── CLAUDE.md
 └── README.md
 ```
@@ -314,6 +316,42 @@ markeye/
 
 > 2 GB 内存环境建议关闭 `--debug` 窗口。预览帧率目标 ≥ 15fps。
 
+### 产线开机自启（kiosk）
+
+专用产线机推荐 **方案 B**：`systemd` 守护后端 + Chromium 全屏自启动。
+
+```bash
+# 1. 安装系统依赖
+sudo apt install chromium-browser unclutter rsync
+
+# 2. 验证脚本与 Web 服务
+./deploy/verify-kiosk.sh
+
+# 3. 一键安装到 /opt/markeye（含 systemd、自动登录、浏览器全屏）
+sudo ./deploy/install-kiosk.sh
+
+# 4. 重启产线机
+sudo reboot
+```
+
+| 脚本 | 用途 |
+|------|------|
+| `deploy/verify-kiosk.sh` | 阶段 1：语法/浏览器/健康检查 |
+| `deploy/kiosk.sh` | 阶段 1：一体启动后端+浏览器（验证用） |
+| `deploy/install-kiosk.sh` | 阶段 2：生产安装（systemd + autostart） |
+| `deploy/kiosk-browser.sh` | 仅启动 Chromium 全屏（后端由 systemd 提供） |
+| `deploy/kiosk-openbox.sh` | 阶段 3：openbox + xinit 轻量 kiosk（2GB 内存） |
+
+运维：
+
+```bash
+sudo systemctl status markeye-web
+journalctl -u markeye-web -f
+./stop_app.sh
+```
+
+注意：勿同时运行 `deploy/kiosk.sh` 与 `markeye-web.service`，避免双实例抢占相机/串口。
+
 ## 环境要求
 
 | | 开发 | 部署 |
@@ -333,7 +371,7 @@ markeye/
 | 创建虚拟环境 | `.venv\Scripts\Activate.ps1` | `source .venv/bin/activate` |
 | 启动 Web 服务 | `start_app.bat` | `./start_app.sh` |
 | 停止 Web 服务 | `stop_app.bat` | `./stop_app.sh` |
-| 产线 kiosk | — | `deploy/kiosk.sh` |
+| 产线 kiosk | — | `deploy/kiosk.sh` / `sudo deploy/install-kiosk.sh` |
 | 核心命令 | `python -m src.web_server` | 同上 |
 
 ### 兼容性结论（代码审查）

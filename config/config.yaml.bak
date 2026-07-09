@@ -222,7 +222,7 @@ io:
   result_ng_hold_ms: 2400
 output:
   save_result: false
-  save_policy: ng
+  save_policy: none
   save_dir: output/
   show_debug: false
   log_level: INFO
@@ -230,7 +230,7 @@ output:
   stats_file: output/stats.json
   jpeg_quality: 70
   history:
-    enabled: true
+    enabled: false
     format: csv
     dir: output/history/
     flush_on_profile_switch: true

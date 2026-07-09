@@ -1,0 +1,22 @@
+[Unit]
+Description=MarkEye Web Detection Service
+Documentation=file:///opt/markeye/README.md
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=markeye
+Group=markeye
+WorkingDirectory=/opt/markeye
+Environment=PATH=/opt/markeye/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/markeye/.venv/bin/python -m src.web_server
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+# 相机 / 串口设备访问
+SupplementaryGroups=video dialout plugdev
+
+[Install]
+WantedBy=multi-user.target
