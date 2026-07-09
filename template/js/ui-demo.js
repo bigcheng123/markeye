@@ -66,8 +66,6 @@ export async function runUiDemo(app) {
     }
     document.querySelector("#wizard-exit")?.click();
     await delay(300);
-    app.clickMode("run");
-    await delay(300);
     if (app.getView() !== "run") throw new Error("退出 STEP3 后应返回运行模式");
   });
 
@@ -148,12 +146,7 @@ export async function runUiDemo(app) {
     await delay(600);
     document.querySelector("#info-close")?.click();
     await delay(400);
-  });
-
-  await step("返回 RUN 模式", async () => {
-    app.clickMode("run");
-    await delay(400);
-    if (app.getView() !== "run") throw new Error("未能返回运行模式");
+    if (app.getView() !== "run") throw new Error("完成向导后应返回运行模式");
   });
 
   await step("RUN 模式 — 复位统计", async () => {

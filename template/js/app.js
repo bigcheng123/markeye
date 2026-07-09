@@ -516,6 +516,7 @@ class MarkEyeApp {
   }
 
   _stopWizardPreview() {
+    this.wizard?._clearHsvMatchPreview?.();
     this._stopStep2Preview();
     this._stopStep3Preview();
     this.previewMode = "off";
@@ -538,6 +539,23 @@ class MarkEyeApp {
       clearInterval(this._step3PreviewTimer);
       this._step3PreviewTimer = null;
     }
+  }
+
+  _pauseStep3PreviewPolling() {
+    if (this._step3PreviewTimer) {
+      clearInterval(this._step3PreviewTimer);
+      this._step3PreviewTimer = null;
+    }
+  }
+
+  _resumeStep3PreviewPolling() {
+    if (!this._step3PreviewActive || this.wizard?.step !== 3 || this._step3PreviewTimer) return;
+    this._step3PreviewTimer = setInterval(() => {
+      const cam = this.wizard?.getSelectedToolCam?.() ?? 0;
+      this._refreshStep3PreviewFrame(cam);
+    }, 400);
+    const cam = this.wizard?.getSelectedToolCam?.() ?? 0;
+    this._refreshStep3PreviewFrame(cam);
   }
 
   async _fetchCameraFrame(deviceId) {
@@ -620,6 +638,7 @@ class MarkEyeApp {
 
   async _refreshStep3PreviewFrame(cam) {
     if (!this._step3PreviewActive || this.wizard?.step !== 3) return;
+    if (this.wizard?._hsvMatchPreviewActive) return;
     try {
       const data = await this._fetchCameraFrame(cam);
       if (data?.image_base64) {
@@ -650,8 +669,8 @@ class MarkEyeApp {
     const saved = await this.wizard.saveAllWizardParams({ silent: false });
     if (!saved) return;
     this._stopWizardPreview();
-    this._setView("set");
-    showToast("参数已保存，已退出向导", "ok");
+    this._setView("run");
+    showToast("参数已保存，已返回运行模式", "ok");
   }
 
   async _onWizardStepChange(step) {
@@ -973,8 +992,8 @@ class MarkEyeApp {
     }
     await infoModal("完成", `传感器设定已完成，配置已保存至「${profileLabel}」。`);
     this._stopWizardPreview();
-    this._setView("set");
-    showToast("向导完成", "ok");
+    this._setView("run");
+    showToast("向导完成，已返回运行模式", "ok");
   }
 
   _getActiveProfileName() {

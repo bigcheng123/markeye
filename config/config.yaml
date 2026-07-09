@@ -131,8 +131,8 @@ tools:
     match_area_max: 2000
     match_area_min: 600
     h_sample:
-    - 141
-    - 7
+    - 125
+    - 6
     - 254
   name: 色彩识别
 - id: '02'
@@ -141,10 +141,10 @@ tools:
   enabled: true
   roi:
     shape: rect
-    x: 408
-    y: 297
+    x: 402
+    y: 283
     w: 45
-    h: 50
+    h: 60
     cx: 0
     cy: 0
     r: 10

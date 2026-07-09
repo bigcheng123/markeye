@@ -799,6 +799,8 @@ export class ImageViewer {
   }
 
   updateFrame(data) {
+    if (this._hsvMatchPreview?.active) return;
+
     if (data?.no_tools) {
       this._showNoToolsViewport(data.viewport_message);
       return;

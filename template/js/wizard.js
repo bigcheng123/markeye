@@ -356,20 +356,31 @@ function _hsvSliderConfig(tool, areaResults) {
   };
 }
 
-const HSV_PICK_TOL = { h: 10, s: 40, v: 40 };
-
-function _applyHsvSample(params, h, s, v) {
-  const { h: dh, s: ds, v: dv } = HSV_PICK_TOL;
-  params.h_sample = [h, s, v];
-  params.h_lower = [clamp(h - dh, 0, 180), clamp(s - ds, 0, 255), clamp(v - dv, 0, 255)];
-  params.h_upper = [clamp(h + dh, 0, 180), clamp(s + ds, 0, 255), clamp(v + dv, 0, 255)];
-}
-
 const HSV_LIMITS = [
   { min: 0, max: 180 },
   { min: 0, max: 255 },
   { min: 0, max: 255 },
 ];
+
+function _hsvBoundsFromSample(h, s, v) {
+  const targets = [h, s, v];
+  const lower = [];
+  const upper = [];
+  for (let i = 0; i < 3; i += 1) {
+    const t = Number(targets[i]) || 0;
+    const { min, max } = HSV_LIMITS[i];
+    lower.push(clamp(Math.round(t * 0.8), min, max));
+    upper.push(clamp(Math.round(t * 1.2), min, max));
+  }
+  return { lower, upper };
+}
+
+function _applyHsvSample(params, h, s, v) {
+  params.h_sample = [h, s, v];
+  const { lower, upper } = _hsvBoundsFromSample(h, s, v);
+  params.h_lower = lower;
+  params.h_upper = upper;
+}
 
 function _hsvSampleDisplay(params, channel) {
   const sample = params?.h_sample;
@@ -461,9 +472,7 @@ function _renderHsvThresholdGrid(params, areaResult = null, { hsvPickActive = fa
       <table class="wizard-hsv-grid">
         <thead>
           <tr>
-            <th class="wizard-hsv-grid__corner">
-              <button type="button" class="btn btn-primary" data-editor-action="hsv-sample-roi">ROI 内取样</button>
-            </th>
+            <th class="wizard-hsv-grid__corner">通道</th>
             <th>下限值</th>
             <th class="wizard-hsv-grid__sample-header">
               <button type="button" class="btn btn-secondary${hsvPickActive ? " is-active" : ""}" data-editor-action="hsv-pick-on" title="在 ROI 内单击目标颜色完成取样">点击取 HSV</button>
@@ -492,7 +501,7 @@ function _renderHsvThresholdGrid(params, areaResult = null, { hsvPickActive = fa
           </tr>
         </tbody>
       </table>
-      <p class="wizard-hint wizard-hsv-grid__hint">建议用「ROI 内取样」获取目标色；点击「点击取 HSV」后在 ROI 内单击目标颜色即可完成取样。橙色通常 H≈10–25。</p>
+      <p class="wizard-hint wizard-hsv-grid__hint">点击「点击取 HSV」后在 ROI 内单击目标颜色，系统将自动填入 ±20% 的 H/S/V 上下限（可再手动微调）。橙色通常 H≈10–25。</p>
     </div>`;
 }
 
@@ -1371,9 +1380,6 @@ export class Wizard {
           this._renderStep3ListAndEditor({ keepEditorFocus: true });
           showToast("HSV 取样已开启（请在 ROI 内单击目标颜色）", "ok");
         }
-        if (action === "hsv-sample-roi") {
-          await this._sampleHsvInRoi(idx);
-        }
         if (action === "hsv-calc-area") {
           await this._calcHsvArea(idx);
         }
@@ -1413,57 +1419,18 @@ export class Wizard {
         const [h, s, val] = hsv;
         this._tools[idx].params = this._tools[idx].params || {};
         _applyHsvSample(this._tools[idx].params, h, s, val);
+        delete this._hsvAreaResults[this._tools[idx].id];
         this._hsvPickActive = false;
-        this._renderStep3ListAndEditor({ keepEditorFocus: true });
+        // 内存已更新上下限；跳过重绘前的 DOM 回读，避免旧输入框值覆盖新计算结果
+        this._renderStep3ListAndEditor({ skipEditorFlush: true });
         this._enableRoiForTool(this._tools[idx], { allowPick: false });
         if (h >= 35 && h <= 90 && s < 80) {
-          showToast(`已取样 HSV=${h},${s},${val}（偏灰/绿色，橙色通常 H≈10–25）`, "warn");
+          showToast(`已取样 HSV=${h},${s},${val}，已自动填入 ±20% 上下限（偏灰/绿色，橙色通常 H≈10–25）`, "warn");
         } else {
-          showToast(`已取样 HSV=${h},${s},${val}`, "ok");
+          showToast(`已取样 HSV=${h},${s},${val}，已自动填入 ±20% 上下限`, "ok");
         }
       },
     });
-  }
-
-  async _sampleHsvInRoi(idx) {
-    this._readToolEditor();
-    const tool = this._tools[idx];
-    if (!tool || tool.type !== "hsv_roi") return;
-
-    let hsv = null;
-
-    if (!isMockMode()) {
-      try {
-        const res = await window.__markeyeApp?.api?.post?.("/api/tools/hsv-sample-roi", {
-          roi: tool.roi,
-          cam: _toolCamSlot(tool),
-          prefer_live: true,
-        });
-        hsv = res?.hsv;
-      } catch {
-        showToast("ROI 取样失败，请确认实时画面可用（相机已连接）", "err");
-        return;
-      }
-    } else {
-      const viewer = window.__markeyeApp?.imageViewer;
-      if (!viewer?._hasFrame) {
-        showToast("请先加载实时图像", "err");
-        return;
-      }
-      hsv = viewer.sampleHsvFromRoi({ roi: tool.roi });
-    }
-
-    if (!hsv) {
-      showToast("ROI 内无有效颜色像素", "err");
-      return;
-    }
-
-    const [h, s, v] = hsv;
-    tool.params = tool.params || {};
-    _applyHsvSample(tool.params, h, s, v);
-    this._tools[idx] = tool;
-    this._renderStep3ListAndEditor();
-    showToast(`ROI 内取样 HSV=${h},${s},${v}`, "ok");
   }
 
   async _calcHsvArea(idx) {
@@ -1515,6 +1482,7 @@ export class Wizard {
   _clearHsvMatchPreview() {
     window.__markeyeApp?.imageViewer?.clearHsvMatchPreview?.();
     this._hsvMatchPreviewActive = false;
+    window.__markeyeApp?._resumeStep3PreviewPolling?.();
   }
 
   async _refreshHsvMatchPreview(idx) {
@@ -1588,6 +1556,7 @@ export class Wizard {
       return;
     }
 
+    window.__markeyeApp?._pauseStep3PreviewPolling?.();
     await this._refreshHsvMatchPreview(idx);
     this._hsvMatchPreviewActive = true;
     this._renderStep3ListAndEditor({ keepEditorFocus: true });
@@ -2110,12 +2079,14 @@ export class Wizard {
       if (k.startsWith("h_lower_")) {
         const i = parseInt(k.split("_")[2], 10);
         const arr = Array.isArray(t.params.h_lower) ? [...t.params.h_lower] : [0, 0, 0];
-        arr[i] = parseInt(el.value, 10);
+        const lim = HSV_LIMITS[i] || HSV_LIMITS[0];
+        arr[i] = clamp(parseInt(el.value, 10) || 0, lim.min, lim.max);
         t.params.h_lower = arr;
       } else if (k.startsWith("h_upper_")) {
         const i = parseInt(k.split("_")[2], 10);
         const arr = Array.isArray(t.params.h_upper) ? [...t.params.h_upper] : [180, 255, 255];
-        arr[i] = parseInt(el.value, 10);
+        const lim = HSV_LIMITS[i] || HSV_LIMITS[0];
+        arr[i] = clamp(parseInt(el.value, 10) || 0, lim.min, lim.max);
         t.params.h_upper = arr;
       } else if (k === "target_shape") {
         t.params.target_shape = el.value;
