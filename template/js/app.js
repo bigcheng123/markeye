@@ -1078,27 +1078,6 @@ class MarkEyeApp {
   }
 
   _bindGlobalActions() {
-    document.querySelector("#btn-sensor-switch")?.addEventListener("click", async () => {
-      try {
-        await this.api?.post("/api/camera/switch");
-        showToast("已切换连接的传感器", "ok");
-      } catch {
-        showToast("切换传感器失败", "err");
-      }
-    });
-
-    document.querySelector("#btn-sensor-disconnect")?.addEventListener("click", async () => {
-      const ok = await confirmModal("确定要断开传感器连接吗？");
-      if (!ok) return;
-      this.api?.stop();
-      this.statusBar.setIdle();
-      showToast("传感器已断开", "warn");
-    });
-
-    document.querySelector("#btn-connect-monitor")?.addEventListener("click", () => {
-      showToast("连接监控器（Phase 2 尚未实现）", "warn");
-    });
-
     document.querySelector("#btn-details")?.addEventListener("click", () => {
       openProfileManager({
         api: this.api,

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MarkEye Dev Browser
+Comment=MarkEye development mode browser (normal window)
+Exec=@INSTALL_DIR@/deploy/dev-browser.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=8

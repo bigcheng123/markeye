@@ -9,6 +9,7 @@ SOURCE_ROOT="$(markeye_deploy_root)"
 
 INSTALL_DIR="/opt/markeye"
 KIOSK_USER="markeye"
+DEV_USER="ubuntu"
 DRY_RUN=0
 SKIP_COPY=0
 SKIP_PIP=0
@@ -23,6 +24,7 @@ usage() {
 选项:
   --install-dir PATH   安装目录（默认 /opt/markeye）
   --user NAME          kiosk 系统用户（默认 markeye）
+  --dev-user NAME      开发模式桌面用户（默认 ubuntu；本机无 ubuntu 时用 trg-327 等）
   --skip-copy          跳过文件复制（目标目录已存在且为当前仓库）
   --skip-pip           跳过 pip install（venv 依赖已就绪时使用）
   --reuse-dev-venv     复用当前仓库 .venv（避免产线机重新下载 opencv）
@@ -69,6 +71,10 @@ while [ $# -gt 0 ]; do
       KIOSK_USER="$2"
       shift 2
       ;;
+    --dev-user)
+      DEV_USER="$2"
+      shift 2
+      ;;
     --skip-copy)
       SKIP_COPY=1
       shift
@@ -113,6 +119,7 @@ fi
 
 log "安装目录: $INSTALL_DIR"
 log "kiosk 用户: $KIOSK_USER"
+log "开发模式用户: $DEV_USER"
 
 if ! id "$KIOSK_USER" >/dev/null 2>&1; then
   log "创建系统用户 $KIOSK_USER"
@@ -225,11 +232,31 @@ log "安装模式切换 helper（markeye-mode-switch@.service + sudoers）"
 if [ "$DRY_RUN" = "0" ]; then
   cp "$SCRIPT_DIR/markeye-mode-switch@.service" /etc/systemd/system/markeye-mode-switch@.service
   chmod 0644 /etc/systemd/system/markeye-mode-switch@.service
-  # allow markeye-web (unprivileged) to trigger the helper via sudo
-  sed "s/^markeye /$KIOSK_USER /" "$SCRIPT_DIR/markeye-mode-switch.sudoers" > /etc/sudoers.d/markeye-mode-switch
+  mkdir -p /etc/systemd/system/markeye-mode-switch@.service.d
+  cat >/etc/systemd/system/markeye-mode-switch@.service.d/dev-user.conf <<EOF
+[Service]
+Environment=MARKEYE_DEV_USER=$DEV_USER
+Environment=MARKEYE_KIOSK_USER=$KIOSK_USER
+Environment=MARKEYE_INSTALL_DIR=$INSTALL_DIR
+EOF
+  chmod 0644 /etc/systemd/system/markeye-mode-switch@.service.d/dev-user.conf
+  # allow markeye-web (unprivileged) to trigger the helper via sudo;
+  # allow dev desktop user autostart to launch backend as kiosk user
+  sed "s/^markeye /$KIOSK_USER /; s|(markeye)|($KIOSK_USER)|g; s|^ubuntu |$DEV_USER |; s|/opt/markeye|$INSTALL_DIR|g" \
+    "$SCRIPT_DIR/markeye-mode-switch.sudoers" > /etc/sudoers.d/markeye-mode-switch
   chmod 0440 /etc/sudoers.d/markeye-mode-switch
+  if id "$DEV_USER" >/dev/null 2>&1; then
+    for grp in "$KIOSK_USER" video dialout plugdev; do
+      if getent group "$grp" >/dev/null 2>&1; then
+        usermod -aG "$grp" "$DEV_USER" 2>/dev/null || true
+      fi
+    done
+  else
+    log "警告: 开发用户 $DEV_USER 不存在，切到 dev 模式前请创建或运行 deploy/apply-dev-user.sh"
+  fi
 else
   echo "[dry-run] 写入 /etc/systemd/system/markeye-mode-switch@.service"
+  echo "[dry-run] 写入 /etc/systemd/system/markeye-mode-switch@.service.d/dev-user.conf (MARKEYE_DEV_USER=$DEV_USER)"
   echo "[dry-run] 写入 /etc/sudoers.d/markeye-mode-switch"
 fi
 
@@ -242,6 +269,8 @@ run chmod +x "$INSTALL_DIR/deploy/kiosk-browser.sh"
 run chmod +x "$INSTALL_DIR/deploy/kiosk-harden.sh"
 run chmod +x "$INSTALL_DIR/deploy/kiosk.sh"
 run chmod +x "$INSTALL_DIR/deploy/verify-kiosk.sh"
+run chmod +x "$INSTALL_DIR/deploy/dev-web.sh"
+run chmod +x "$INSTALL_DIR/deploy/dev-browser.sh"
 run chmod +x "$INSTALL_DIR/deploy/mode-switch.sh" 2>/dev/null || true
 
 KIOSK_HOME=""

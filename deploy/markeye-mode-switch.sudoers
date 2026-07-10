@@ -4,3 +4,6 @@
 # This does NOT allow arbitrary commands; only starting the two units below.
 markeye ALL=(root) NOPASSWD: /bin/systemctl start markeye-mode-switch@prod.service, /bin/systemctl start markeye-mode-switch@dev.service
 
+# Development mode: ubuntu session autostart may launch backend as markeye (non-systemd).
+ubuntu ALL=(markeye) NOPASSWD: /opt/markeye/deploy/dev-web.sh
+

@@ -65,6 +65,11 @@ markeye_chromium_kiosk_flags() {
   printf '%s' "--kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --no-first-run --disable-translate --app=${url}"
 }
 
+markeye_chromium_dev_flags() {
+  local url="${1:-http://127.0.0.1:8080/template/}"
+  printf '%s' "--new-window --password-store=basic --no-first-run --disable-translate ${url}"
+}
+
 markeye_disable_screensaver() {
   if ! command -v gsettings >/dev/null 2>&1; then
     echo "[警告] 未找到 gsettings，跳过屏保/休眠配置"

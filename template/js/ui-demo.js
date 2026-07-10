@@ -77,12 +77,6 @@ export async function runUiDemo(app) {
     app.clickEl("#btn-switch");
   });
 
-  await step("全局 — 快捷工具栏", async () => {
-    app.clickEl("#btn-sensor-switch");
-    await delay(300);
-    app.clickEl("#btn-connect-monitor");
-  });
-
   await step("全局 — ProgramBar 按钮", async () => {
     app.clickEl("#btn-details");
     await delay(600);
