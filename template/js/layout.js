@@ -12,9 +12,18 @@ function syncFullscreenButton() {
   const btn = document.querySelector("#btn-fullscreen");
   if (!btn) return;
   const active = !!document.fullscreenElement;
-  btn.textContent = active ? "退出全屏" : "全屏";
+  btn.textContent = active ? "退出全屏" : "全屏显示";
   btn.setAttribute("aria-pressed", active ? "true" : "false");
   btn.title = active ? "退出全屏" : "全屏显示";
+}
+
+function syncImageFillOnFullscreen() {
+  const viewer = window.__markeyeApp?.imageViewer;
+  if (!viewer) return;
+  requestAnimationFrame(() => {
+    viewer.fillToScreen();
+    requestAnimationFrame(() => viewer.fillToScreen());
+  });
 }
 
 export function initLayout() {
@@ -43,7 +52,10 @@ export function initLayout() {
   document.querySelector("#btn-fullscreen")?.addEventListener("click", () => {
     toggleFullscreen();
   });
-  document.addEventListener("fullscreenchange", syncFullscreenButton);
+  document.addEventListener("fullscreenchange", () => {
+    syncFullscreenButton();
+    syncImageFillOnFullscreen();
+  });
   syncFullscreenButton();
 
   document.addEventListener("keydown", (e) => {

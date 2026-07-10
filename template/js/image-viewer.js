@@ -53,7 +53,13 @@ export class ImageViewer {
     this._bindRoiEditorEvents();
     this._bindToolbar();
     drawPlaceholderScene(this.ctx, this.imgWidth, this.imgHeight, "original");
-    window.addEventListener("resize", () => this._render());
+    window.addEventListener("resize", () => {
+      if (document.fullscreenElement) {
+        this.fillToScreen();
+      } else {
+        this._render();
+      }
+    });
   }
 
   _ensureSvgLayers() {
@@ -663,6 +669,16 @@ export class ImageViewer {
     const ch = wrap.clientHeight;
     if (!cw || !ch || !this.imgWidth || !this.imgHeight) return;
     this.scale = Math.min(cw / this.imgWidth, ch / this.imgHeight, 1);
+    if (this.scale <= 0) this.scale = 1;
+    this._render();
+  }
+
+  fillToScreen() {
+    const wrap = this.root;
+    const cw = wrap.clientWidth;
+    const ch = wrap.clientHeight;
+    if (!cw || !ch || !this.imgWidth || !this.imgHeight) return;
+    this.scale = Math.min(cw / this.imgWidth, ch / this.imgHeight);
     if (this.scale <= 0) this.scale = 1;
     this._render();
   }
