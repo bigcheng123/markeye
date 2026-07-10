@@ -1,0 +1,14 @@
+[Unit]
+Description=MarkEye mode switch (%I) and reboot
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/markeye/deploy/mode-switch.sh %I
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+

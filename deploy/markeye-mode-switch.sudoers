@@ -1,0 +1,6 @@
+# Allow MarkEye web service user to trigger a limited mode switch helper.
+# Installed as: /etc/sudoers.d/markeye-mode-switch (0440)
+#
+# This does NOT allow arbitrary commands; only starting the two units below.
+markeye ALL=(root) NOPASSWD: /bin/systemctl start markeye-mode-switch@prod.service, /bin/systemctl start markeye-mode-switch@dev.service
+

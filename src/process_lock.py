@@ -10,7 +10,29 @@ from pathlib import Path
 
 logger = logging.getLogger("markeye.process_lock")
 
-LOCK_PATH = Path(tempfile.gettempdir()) / "markeye.lock"
+def _default_lock_dir() -> Path:
+    # Prefer per-user runtime dir on Linux (systemd) when it exists,
+    # otherwise fall back to the OS temp dir (usually /tmp).
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        p = Path(runtime)
+        if p.exists() and p.is_dir():
+            return p
+    return Path(tempfile.gettempdir())
+
+
+def _lock_path() -> Path:
+    # Avoid cross-user collisions: production (root) should not block dev user.
+    suffix = ""
+    if hasattr(os, "getuid"):
+        try:
+            suffix = f".{os.getuid()}"
+        except Exception:
+            suffix = ""
+    return _default_lock_dir() / f"markeye{suffix}.lock"
+
+
+LOCK_PATH = _lock_path()
 
 
 def _pid_alive(pid: int) -> bool:
@@ -49,7 +71,12 @@ def acquire_process_lock() -> None:
             LOCK_PATH.unlink()
         except OSError:
             pass
-    LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+    except PermissionError:
+        logger.error("无法写入进程锁文件: %s（权限不足）", LOCK_PATH)
+        logger.error("如曾以 root/生产模式启动，请删除旧锁文件或改用当前用户启动。")
+        sys.exit(1)
     logger.debug("进程锁已创建: %s (PID %s)", LOCK_PATH, os.getpid())
 
 

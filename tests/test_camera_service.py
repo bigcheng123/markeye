@@ -42,6 +42,68 @@ def test_capture_for_trigger_waits_for_new_frame():
 
     assert frame is not None
     assert int(frame[0, 0, 0]) == 90
+    meta = svc.last_trigger_capture_meta()
+    assert meta["0"]["source"] == "wait"
+    assert meta["0"]["frame_seq"] == 2
+
+
+def test_capture_for_trigger_direct_read_when_cap_available():
+    svc = CameraService({})
+    slot = svc._slots[0]
+    slot.connected = True
+    slot.frame_seq = 3
+
+    cap = MagicMock()
+    frames = [
+        np.zeros((10, 10, 3), dtype=np.uint8),
+        np.ones((10, 10, 3), dtype=np.uint8) * 40,
+        np.ones((10, 10, 3), dtype=np.uint8) * 80,
+    ]
+    cap.read.side_effect = [(True, frames[0]), (True, frames[1]), (True, frames[2])]
+    slot.cap = cap
+
+    frame = svc.capture_for_trigger()
+
+    assert frame is not None
+    assert int(frame[0, 0, 0]) == 80
+    assert int(slot.latest_frame[0, 0, 0]) == 80
+    assert slot.frame_seq == 4
+    meta = svc.last_trigger_capture_meta()
+    assert meta["0"]["source"] == "direct_read"
+    assert meta["0"]["frame_seq"] == 4
+
+
+def test_connect_slot_sets_capture_buffer_size():
+    import cv2
+
+    svc = CameraService({})
+    cap = MagicMock()
+    with patch.object(svc, "_open_capture", return_value=cap):
+        assert svc.connect_slot(0, 1) is True
+    cap.set.assert_called_once()
+    assert cap.set.call_args.args[0] == cv2.CAP_PROP_BUFFERSIZE
+    assert cap.set.call_args.args[1] == 1
+
+
+def test_capture_all_for_trigger_records_meta_per_slot():
+    import cv2
+
+    svc = CameraService({})
+    for slot_idx in (0, 1):
+        slot = svc._slots[slot_idx]
+        slot.connected = True
+        cap = MagicMock()
+        frame = np.zeros((4, 4, 3), dtype=np.uint8) + (slot_idx + 1) * 10
+        cap.read.return_value = (True, frame)
+        slot.cap = cap
+
+    frames = svc.capture_all_for_trigger({0, 1})
+
+    assert set(frames.keys()) == {0, 1}
+    meta = svc.last_trigger_capture_meta()
+    assert set(meta.keys()) == {"0", "1"}
+    assert meta["0"]["source"] == "direct_read"
+    assert meta["1"]["source"] == "direct_read"
 
 
 def test_fallback_does_not_use_master_image(tmp_path):

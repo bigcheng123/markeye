@@ -221,6 +221,18 @@ else
   echo "[dry-run] 写入 /etc/systemd/system/markeye-web.service"
 fi
 
+log "安装模式切换 helper（markeye-mode-switch@.service + sudoers）"
+if [ "$DRY_RUN" = "0" ]; then
+  cp "$SCRIPT_DIR/markeye-mode-switch@.service" /etc/systemd/system/markeye-mode-switch@.service
+  chmod 0644 /etc/systemd/system/markeye-mode-switch@.service
+  # allow markeye-web (unprivileged) to trigger the helper via sudo
+  sed "s/^markeye /$KIOSK_USER /" "$SCRIPT_DIR/markeye-mode-switch.sudoers" > /etc/sudoers.d/markeye-mode-switch
+  chmod 0440 /etc/sudoers.d/markeye-mode-switch
+else
+  echo "[dry-run] 写入 /etc/systemd/system/markeye-mode-switch@.service"
+  echo "[dry-run] 写入 /etc/sudoers.d/markeye-mode-switch"
+fi
+
 if [ -f /etc/systemd/system/markeye.service ] && [ "$DRY_RUN" = "0" ]; then
   log "检测到旧单元 markeye.service，停用以避免与 markeye-web 争抢 8080"
   systemctl disable --now markeye.service 2>/dev/null || true
@@ -230,6 +242,7 @@ run chmod +x "$INSTALL_DIR/deploy/kiosk-browser.sh"
 run chmod +x "$INSTALL_DIR/deploy/kiosk-harden.sh"
 run chmod +x "$INSTALL_DIR/deploy/kiosk.sh"
 run chmod +x "$INSTALL_DIR/deploy/verify-kiosk.sh"
+run chmod +x "$INSTALL_DIR/deploy/mode-switch.sh" 2>/dev/null || true
 
 KIOSK_HOME=""
 if getent passwd "$KIOSK_USER" >/dev/null 2>&1; then

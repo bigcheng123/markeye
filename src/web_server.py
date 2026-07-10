@@ -15,6 +15,7 @@ from typing import Optional
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -53,6 +54,7 @@ from .version import get_app_meta
 logger = setup_logger()
 ROOT = Path(__file__).resolve().parent.parent
 PREVIEW_PAUSE_AFTER_TRIGGER_SEC = 0.6
+MODE_SWITCH_SERVICE_PREFIX = "markeye-mode-switch@"
 
 
 class AppState:
@@ -340,7 +342,16 @@ async def _idle_history_flush_loop() -> None:
             logger.warning("待机履历落盘检查异常: %s", exc)
 
 
-state = AppState()
+#
+# NOTE:
+# Do not eagerly initialize AppState at import time.
+# On production machines, camera / IO initialization may block during boot or
+# driver bring-up, which would prevent the web server from binding to :8080 and
+# make kiosk startup hang forever waiting for /api/health.
+#
+# Lifespan guarantees initialization happens during FastAPI startup (before
+# serving requests) while still allowing the socket bind to proceed.
+state: AppState | None = None
 
 
 async def _connect_camera_with_retry() -> bool:
@@ -412,6 +423,9 @@ async def _startup_hardware() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global state
+    if state is None:
+        state = AppState()
     acquire_process_lock()
     register_hardware_cleanup(state.camera, state.io, label="web")
     state._last_frame_payload = json_safe(
@@ -672,6 +686,56 @@ async def system_restart():
     logger.info("收到重启软件请求")
     asyncio.create_task(_schedule_restart())
     return {"ok": True}
+
+
+class SystemModeBody(BaseModel):
+    mode: str
+
+
+def _client_is_local(request: Request) -> bool:
+    try:
+        host = request.client.host if request.client else ""
+    except Exception:
+        host = ""
+    return host in {"127.0.0.1", "::1", "localhost"}
+
+
+@app.post("/api/system/mode")
+async def system_switch_mode(request: Request, body: SystemModeBody):
+    """切换系统运行模式（生产/开发）并触发系统重启。
+
+    安全约束：
+    - 仅允许本机调用（避免局域网误触发重启）
+    - mode 仅允许 prod/dev
+    - 实际切换动作由 root helper（systemd oneshot）执行
+    """
+    if not _client_is_local(request):
+        raise HTTPException(403, "仅允许本机调用")
+    mode = str(body.mode or "").strip().lower()
+    if mode not in {"prod", "dev"}:
+        raise HTTPException(400, "mode 仅支持 prod/dev")
+
+    # Use a root helper via sudoers allowlist:
+    #   sudo systemctl start markeye-mode-switch@prod.service
+    # This keeps the web service unprivileged (User=markeye).
+    import subprocess
+
+    unit = f"{MODE_SWITCH_SERVICE_PREFIX}{mode}.service"
+    try:
+        subprocess.run(
+            ["sudo", "/bin/systemctl", "start", unit],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(504, "切换模式请求超时") from exc
+    except Exception as exc:
+        logger.warning("切换模式请求失败: %s", exc)
+        raise HTTPException(503, "切换模式请求失败（权限/服务未安装）") from exc
+
+    return {"ok": True, "mode": mode, "unit": unit}
 
 
 @app.post("/api/system/shutdown")
@@ -1006,7 +1070,11 @@ def _trigger_capture_and_detect(*, skip_archive: bool = False) -> dict:
     cfg = state.config_store.get_cached()
     slots = required_tool_cam_slots(cfg) if has_active_tools(cfg) else None
     frames = state.camera.capture_all_for_trigger(slots)
-    return state.run_detection(frames, skip_archive=skip_archive)
+    payload = state.run_detection(frames, skip_archive=skip_archive)
+    capture_meta = state.camera.last_trigger_capture_meta()
+    if capture_meta:
+        payload["capture_meta"] = capture_meta
+    return payload
 
 
 class TriggerBody(BaseModel):

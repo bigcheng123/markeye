@@ -42,6 +42,9 @@ function buildMenus(app) {
       },
       { separator: true },
       { action: "file-restart", label: "重启软件…" },
+      { separator: true },
+      { action: "mode-switch-prod", label: "切换到生产模式（重启系统）…" },
+      { action: "mode-switch-dev", label: "切换到开发模式（重启系统）…" },
     ],
     "menu-view": [
       {
@@ -139,6 +142,20 @@ async function restartSoftware(app) {
     setTimeout(() => location.reload(), 1500);
   } catch {
     showToast("重启请求失败", "err");
+  }
+}
+
+async function switchSystemMode(app, mode) {
+  const label = mode === "prod" ? "生产模式" : "开发模式";
+  const ok = await confirmModal(
+    `确定切换到${label}吗？\n\n系统将立即重启，未保存的设定可能丢失。`,
+  );
+  if (!ok) return;
+  try {
+    await app.api?.post("/api/system/mode", { mode });
+    showToast(`正在切换到${label}并重启系统…`, "ok");
+  } catch {
+    showToast("切换模式请求失败（需要本机权限/后端未启用）", "err");
   }
 }
 
@@ -261,6 +278,12 @@ async function handleMenuAction(action, app) {
     }
     case "file-restart":
       await restartSoftware(app);
+      break;
+    case "mode-switch-prod":
+      await switchSystemMode(app, "prod");
+      break;
+    case "mode-switch-dev":
+      await switchSystemMode(app, "dev");
       break;
 
     case "view-original":

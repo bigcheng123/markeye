@@ -171,6 +171,14 @@ def _device_model(cap: cv2.VideoCapture) -> str:
     return "—"
 
 
+def _configure_capture_buffer(cap: cv2.VideoCapture) -> None:
+    """尽量减小驱动/OpenCV 内部缓冲，降低触发采图读到旧帧的概率。"""
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except cv2.error:
+        pass
+
+
 def _device_info_from_cap(device_id: int, cap: cv2.VideoCapture) -> dict:
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
@@ -276,6 +284,7 @@ class CameraService:
         self._cap_lock = threading.RLock()
         self._grab_stop = threading.Event()
         self._grab_thread: Optional[threading.Thread] = None
+        self._last_trigger_capture_meta: dict[int, dict[str, Any]] = {}
         # 兼容旧测试/旧代码：曾直接使用 _connected/_latest_frame/_frame_seq（单路相机模型）
         # 现在统一映射到 slot0 状态，通过 property 维持可读写行为。
 
@@ -429,6 +438,8 @@ class CameraService:
         self.disconnect_slot(slot)
         # 在锁外完成设备探测/打开（可能较慢），再在锁内挂载 cap，避免与抓帧线程竞争。
         cap = self._open_capture(int(device_id))
+        if cap is not None:
+            _configure_capture_buffer(cap)
         state = self._slots[slot]
         with self._cap_lock:
             state.device_id = int(device_id)
@@ -536,7 +547,8 @@ class CameraService:
                         state.using_fallback = False
                     any_read = True
                 else:
-                    state.using_fallback = True
+                    with self._lock:
+                        state.using_fallback = True
             if not any_read:
                 time.sleep(0.02)
 
@@ -562,10 +574,57 @@ class CameraService:
                 return state.latest_frame.copy()
             return self._capture_fallback_unlocked(slot)
 
+    def _record_trigger_capture_meta(
+        self,
+        slot: int,
+        *,
+        source: str,
+        started_at: float,
+        frame_seq: int,
+    ) -> None:
+        self._last_trigger_capture_meta[slot] = {
+            "slot": slot,
+            "frame_seq": int(frame_seq),
+            "capture_ms": round((time.monotonic() - started_at) * 1000.0, 2),
+            "source": source,
+        }
+
+    def last_trigger_capture_meta(self) -> dict[str, dict[str, Any]]:
+        return {str(k): v for k, v in self._last_trigger_capture_meta.items()}
+
     def capture_for_trigger(self, slot: int = 0, *, max_wait_s: float = 0.2) -> Optional[np.ndarray]:
         if slot < 0 or slot >= NUM_CAMERA_SLOTS:
             slot = 0
         state = self._slots[slot]
+        started_at = time.monotonic()
+
+        # Try to capture a fresh frame at trigger time. Depending only on the
+        # background grabber can cause the slower slot to lag by ~1 frame.
+        with self._cap_lock:
+            cap = state.cap
+            if state.connected and cap is not None:
+                last_good: Optional[np.ndarray] = None
+                # Drain a few reads to reduce internal buffering delay.
+                for _ in range(3):
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        break
+                    last_good = frame
+                if last_good is not None:
+                    with self._lock:
+                        state.latest_frame = last_good
+                        state.last_frame = last_good
+                        state.frame_seq += 1
+                        state.using_fallback = False
+                        frame_seq = state.frame_seq
+                    self._record_trigger_capture_meta(
+                        slot,
+                        source="direct_read",
+                        started_at=started_at,
+                        frame_seq=frame_seq,
+                    )
+                    return last_good.copy()
+
         with self._lock:
             start_seq = state.frame_seq
 
@@ -574,12 +633,32 @@ class CameraService:
             time.sleep(0.005)
             with self._lock:
                 if state.frame_seq > start_seq and state.latest_frame is not None:
+                    self._record_trigger_capture_meta(
+                        slot,
+                        source="wait",
+                        started_at=started_at,
+                        frame_seq=state.frame_seq,
+                    )
                     return state.latest_frame.copy()
 
         with self._lock:
             if state.latest_frame is not None:
+                self._record_trigger_capture_meta(
+                    slot,
+                    source="cached",
+                    started_at=started_at,
+                    frame_seq=state.frame_seq,
+                )
                 return state.latest_frame.copy()
-            return self._capture_fallback_unlocked(slot)
+            frame = self._capture_fallback_unlocked(slot)
+            if frame is not None:
+                self._record_trigger_capture_meta(
+                    slot,
+                    source="fallback",
+                    started_at=started_at,
+                    frame_seq=state.frame_seq,
+                )
+            return frame
 
     def capture_all_for_trigger(self, slots: Optional[set[int]] = None) -> dict[int, Optional[np.ndarray]]:
         if slots is None:
@@ -588,6 +667,7 @@ class CameraService:
             target = {max(0, min(NUM_CAMERA_SLOTS - 1, int(s))) for s in slots}
             if not target:
                 target = {0}
+        self._last_trigger_capture_meta = {}
         return {slot: self.capture_for_trigger(slot) for slot in sorted(target)}
 
     def capture_frame(self, slot: int = 0) -> Optional[np.ndarray]:

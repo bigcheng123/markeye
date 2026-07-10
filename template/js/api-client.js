@@ -137,6 +137,9 @@ class MockApiClient {
     if (path === "/api/system/restart") {
       return { ok: true, mock: true };
     }
+    if (path === "/api/system/mode") {
+      return { ok: true, mock: true, mode: body?.mode || "dev" };
+    }
     if (path === "/api/system/shutdown") {
       return { ok: true, mock: true };
     }
