@@ -1,5 +1,7 @@
 /** 布局、弹窗、Toast */
 
+import { hideOsk } from "./osk.js";
+
 export function toggleFullscreen() {
   if (!document.fullscreenElement) {
     document.documentElement.requestFullscreen?.();
@@ -123,11 +125,14 @@ export function promptModal(title, { defaultValue = "", hint = "", label = "配�
     }
     if (labelEl) labelEl.textContent = label;
     input.value = defaultValue;
+    input.setAttribute("data-osk", "text");
+    input.setAttribute("inputmode", "none");
     overlay.classList.add("is-open");
     input.focus();
     input.select();
 
     const cleanup = (result) => {
+      hideOsk();
       overlay.classList.remove("is-open");
       btnOk?.removeEventListener("click", onOk);
       btnCancel?.removeEventListener("click", onCancel);
@@ -275,6 +280,7 @@ export function showToast(message, type = "ok") {
 export function setAppView(view) {
   const app = document.querySelector("#app");
   if (!app) return;
+  hideOsk();
   app.classList.remove("view-run", "view-set", "view-wizard");
   app.classList.add(`view-${view}`);
 }

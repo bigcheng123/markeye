@@ -99,7 +99,8 @@
 .select-profile {
   min-width: 180px;
   max-width: 280px;
-  height: 32px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
   padding: 0 var(--spacing-sm);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -108,13 +109,14 @@
 }
 
 .select-process {
-  height: 28px;
-  padding: 0 6px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
+  padding: 0 8px;
   border: 1px solid #666;
   border-radius: var(--radius-sm);
   background: #555;
   color: #fff;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .toolbar-camera-label {
@@ -160,8 +162,8 @@
 }
 
 .btn-camera-row-del {
-  min-width: 32px;
-  min-height: 32px;
+  min-width: var(--touch-min);
+  min-height: var(--touch-min);
   padding: 0;
 }
 
@@ -252,12 +254,12 @@
   color: var(--color-ng);
 }
 
-/* Compact variants — must follow .btn to override min-height: 44px */
+/* Compact variants — touch-friendly (≥44px) on industrial panels */
 .btn.btn-program {
   flex: 1;
   min-width: 0;
-  height: 40px;
-  min-height: 40px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
   padding: 2px 6px;
   font-size: 12px;
   line-height: 1.2;
@@ -266,10 +268,10 @@
 }
 
 .btn.btn-toolbar-action {
-  height: 28px;
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
+  padding: 0 12px;
+  font-size: 13px;
   background: #555;
   color: #fff;
   border-color: #666;
@@ -503,6 +505,7 @@
 
 .tool-detail__threshold input[type="range"] {
   flex: 1;
+  height: var(--touch-min);
   accent-color: var(--color-run-active);
 }
 
@@ -846,7 +849,8 @@
 .wizard-io-link-badge {
   margin-left: auto;
   min-width: 88px;
-  height: 32px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
   padding: 0 14px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -954,10 +958,13 @@
 .wizard-form-row input[type="text"] {
   flex: 1;
   max-width: 280px;
-  height: 32px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
   padding: 0 var(--spacing-sm);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
+  font-size: var(--font-size-body);
+  box-sizing: border-box;
 }
 
 .wizard-form-row--camera-list {
@@ -1048,7 +1055,7 @@
 .wizard-hsv-grid__action-header .btn,
 .wizard-hsv-grid__action-cell .btn {
   width: 100%;
-  min-height: 28px;
+  min-height: var(--touch-min);
   padding: 4px 6px;
   font-size: 12px;
   white-space: nowrap;
@@ -1123,7 +1130,7 @@
 
 .wizard-hsv-grid__sample-header .btn {
   width: 100%;
-  min-height: 28px;
+  min-height: var(--touch-min);
   padding: 4px 8px;
   font-size: 12px;
   white-space: nowrap;
@@ -1144,7 +1151,8 @@
 .wizard-hsv-grid td input[type="number"] {
   width: 100%;
   max-width: none;
-  height: 30px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
   padding: 0 6px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -1460,11 +1468,12 @@
 
 .modal__field input {
   width: 100%;
-  height: 32px;
+  height: var(--touch-min);
+  min-height: var(--touch-min);
   padding: 0 8px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: 14px;
   box-sizing: border-box;
 }
 

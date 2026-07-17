@@ -26,6 +26,7 @@ import {
 } from "./mock-data.js";
 import { runUiDemo } from "./ui-demo.js";
 import { bindMenuBar } from "./menu-bar.js";
+import { initOsk, hideOsk } from "./osk.js";
 
 class MarkEyeApp {
   constructor() {
@@ -75,6 +76,7 @@ class MarkEyeApp {
     this._bindKeyboard();
     this._bindToolPreview();
     initLayout();
+    initOsk();
   }
 
   async _syncRunModeIo(enabled) {
@@ -469,6 +471,7 @@ class MarkEyeApp {
 
   _setView(view) {
     this.view = view;
+    hideOsk();
     setAppView(view === "wizard" ? "wizard" : view === "set" ? "set" : "run");
     updateModeTabIcons(view);
     void this._syncRunModeIo(view === "run");

@@ -9,10 +9,12 @@
   <link rel="stylesheet" href="css/layout.css" />
   <link rel="stylesheet" href="css/components.css" />
   <link rel="stylesheet" href="css/theme-industrial.css" />
+  <link rel="stylesheet" href="css/osk.css" />
 </head>
 <body>
   <div id="connection-banner" role="alert" aria-live="polite"></div>
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
+  <div id="osk-root" hidden aria-hidden="true"></div>
 
   <div id="app" class="app-root view-run">
     <!-- ── GLOBAL_SHELL ── -->
@@ -336,7 +338,7 @@
       <p id="prompt-hint" class="modal__hint"></p>
       <div class="modal__field">
         <label for="prompt-input">配方文件名</label>
-        <input type="text" id="prompt-input" autocomplete="off" spellcheck="false" />
+        <input type="text" id="prompt-input" data-osk="text" inputmode="none" autocomplete="off" spellcheck="false" />
       </div>
       <div class="modal__actions">
         <button type="button" id="prompt-cancel" class="btn btn-secondary">取消</button>

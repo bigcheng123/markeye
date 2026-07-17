@@ -2,6 +2,7 @@
 
 import { confirmModal, infoModal, showToast } from "./layout.js";
 import { isMockMode } from "./api-client.js";
+import { hideOsk } from "./osk.js";
 
 const STEP_TITLES = {
   1: { title: "STEP1 拍摄条件", desc: "设定拍摄与触发相关条件。" },
@@ -155,7 +156,7 @@ function _renderArchivePanel(output) {
           <label class="wizard-archive-check">
             <input type="checkbox" data-field="history-flush-idle-enable" ${idleOn ? "checked" : ""} />
             设备待机时间超过
-            <input type="number" data-field="history-flush-idle-minutes" value="${idleOn ? idleMin : 50}" min="1" max="9999" ${idleOn ? "" : "disabled"} />
+            <input type="number" data-osk="int" data-field="history-flush-idle-minutes" value="${idleOn ? idleMin : 50}" min="1" max="9999" inputmode="none" ${idleOn ? "" : "disabled"} />
             分钟
           </label>
         </div>
@@ -264,7 +265,7 @@ function _renderCameraListRows(cameras) {
     .map(
       (id, i) => `
         <div class="wizard-camera-row" data-camera-index="${i}">
-          <input type="number" min="0" step="1" data-field="camera-id" value="${id}" aria-label="相机设备号 ${i}" />
+          <input type="number" min="0" step="1" data-osk="int" data-field="camera-id" value="${id}" aria-label="相机设备号 ${i}" inputmode="none" />
           <button type="button" class="btn btn-secondary btn-camera-row-del" data-action="camera-remove"
             ${cameras.length <= 1 ? "disabled" : ""} title="删除">−</button>
           <button type="button" class="btn btn-primary btn-ai-shoot-row" data-action="ai-shoot" title="拍摄">✨ 拍摄</button>
@@ -454,9 +455,9 @@ function _renderHsvThresholdGrid(params, areaResult = null, { hsvPickActive = fa
     const sample = _hsvSampleDisplay(params, i);
     return `
         <th class="wizard-hsv-grid__axis">${label}</th>
-        <td><input type="number" data-param-field="h_lower_${i}" value="${hLower[i] ?? 0}" min="${lim.min}" max="${lim.max}" aria-label="${label} 下限值" /></td>
+        <td><input type="number" data-osk="int" data-param-field="h_lower_${i}" value="${hLower[i] ?? 0}" min="${lim.min}" max="${lim.max}" aria-label="${label} 下限值" inputmode="none" /></td>
         <td><span class="wizard-hsv-grid__sample" data-hsv-sample="${i}" aria-label="${label} 取样值"${sampleStyleAttr}>${sample}</span></td>
-        <td><input type="number" data-param-field="h_upper_${i}" value="${hUpper[i] ?? lim.max}" min="${lim.min}" max="${lim.max}" aria-label="${label} 上限值" /></td>`;
+        <td><input type="number" data-osk="int" data-param-field="h_upper_${i}" value="${hUpper[i] ?? lim.max}" min="${lim.min}" max="${lim.max}" aria-label="${label} 上限值" inputmode="none" /></td>`;
   };
 
   let areaHtml = "—";
@@ -493,11 +494,11 @@ function _renderHsvThresholdGrid(params, areaResult = null, { hsvPickActive = fa
           </tr>
           <tr>${hsvCoreCells("S", 1)}
             <td class="wizard-hsv-grid__area-label">面积上限值</td>
-            <td><input type="number" data-param-field="match_area_max" value="${areaMax}" min="0" max="${areaLimit}" placeholder="设定值" aria-label="面积上限值" /></td>
+            <td><input type="number" data-osk="int" data-param-field="match_area_max" value="${areaMax}" min="0" max="${areaLimit}" placeholder="设定值" aria-label="面积上限值" inputmode="none" /></td>
           </tr>
           <tr>${hsvCoreCells("V", 2)}
             <td class="wizard-hsv-grid__area-label">面积下限值</td>
-            <td><input type="number" data-param-field="match_area_min" value="${areaMin}" min="0" max="${areaLimit}" placeholder="设定值" aria-label="面积下限值" /></td>
+            <td><input type="number" data-osk="int" data-param-field="match_area_min" value="${areaMin}" min="0" max="${areaLimit}" placeholder="设定值" aria-label="面积下限值" inputmode="none" /></td>
           </tr>
         </tbody>
       </table>
@@ -537,15 +538,15 @@ function _renderToolParamsTwoColumn(sel, roi, roiRect) {
             <option value="circle" ${roi.shape === "circle" ? "selected" : ""}>圆形</option>
           </select>
         </div>
-        <div class="wizard-form-row"><label>ROI X</label><input type="number" data-roi-field="x" value="${roi.x ?? 0}" ${roiRect ? "" : "disabled"} /></div>
-        <div class="wizard-form-row"><label>ROI Y</label><input type="number" data-roi-field="y" value="${roi.y ?? 0}" ${roiRect ? "" : "disabled"} /></div>
+        <div class="wizard-form-row"><label>ROI X</label><input type="number" data-osk="int" data-roi-field="x" value="${roi.x ?? 0}" inputmode="none" ${roiRect ? "" : "disabled"} /></div>
+        <div class="wizard-form-row"><label>ROI Y</label><input type="number" data-osk="int" data-roi-field="y" value="${roi.y ?? 0}" inputmode="none" ${roiRect ? "" : "disabled"} /></div>
       </div>
       <div class="wizard-tool-params-col">
-        <div class="wizard-form-row"><label>ROI W</label><input type="number" data-roi-field="w" value="${roi.w ?? 10}" ${roiRect ? "" : "disabled"} /></div>
-        <div class="wizard-form-row"><label>ROI H</label><input type="number" data-roi-field="h" value="${roi.h ?? 10}" ${roiRect ? "" : "disabled"} /></div>
-        <div class="wizard-form-row"><label>ROI CX</label><input type="number" data-roi-field="cx" value="${roi.cx ?? 0}" ${roi.shape === "circle" ? "" : "disabled"} /></div>
-        <div class="wizard-form-row"><label>ROI CY</label><input type="number" data-roi-field="cy" value="${roi.cy ?? 0}" ${roi.shape === "circle" ? "" : "disabled"} /></div>
-        <div class="wizard-form-row"><label>ROI R</label><input type="number" data-roi-field="r" value="${roi.r ?? 10}" ${roi.shape === "circle" ? "" : "disabled"} /></div>
+        <div class="wizard-form-row"><label>ROI W</label><input type="number" data-osk="int" data-roi-field="w" value="${roi.w ?? 10}" inputmode="none" ${roiRect ? "" : "disabled"} /></div>
+        <div class="wizard-form-row"><label>ROI H</label><input type="number" data-osk="int" data-roi-field="h" value="${roi.h ?? 10}" inputmode="none" ${roiRect ? "" : "disabled"} /></div>
+        <div class="wizard-form-row"><label>ROI CX</label><input type="number" data-osk="int" data-roi-field="cx" value="${roi.cx ?? 0}" inputmode="none" ${roi.shape === "circle" ? "" : "disabled"} /></div>
+        <div class="wizard-form-row"><label>ROI CY</label><input type="number" data-osk="int" data-roi-field="cy" value="${roi.cy ?? 0}" inputmode="none" ${roi.shape === "circle" ? "" : "disabled"} /></div>
+        <div class="wizard-form-row"><label>ROI R</label><input type="number" data-osk="int" data-roi-field="r" value="${roi.r ?? 10}" inputmode="none" ${roi.shape === "circle" ? "" : "disabled"} /></div>
       </div>
     </div>`;
 }
@@ -639,6 +640,7 @@ export class Wizard {
   }
 
   goToStep(step) {
+    hideOsk();
     const fromStep = this.step;
     if (this.step === 3 && step !== 3) {
       this._readToolEditor();
@@ -667,6 +669,7 @@ export class Wizard {
   }
 
   hide() {
+    hideOsk();
     this._stopIoPoll();
     if (this.rightCol) this.rightCol.hidden = true;
     this.stepNav.hidden = true;
@@ -866,7 +869,7 @@ export class Wizard {
             </div>
             <div class="wizard-form-row">
               <label>延迟 (ms)</label>
-              <input type="number" value="0" min="0" max="10000" data-field="trigger-delay" />
+              <input type="number" value="0" min="0" max="10000" data-osk="int" data-field="trigger-delay" inputmode="none" />
             </div>
             <div class="wizard-form-row wizard-form-row--camera-list">
               <label>相机号码</label>
@@ -892,8 +895,8 @@ export class Wizard {
         <div class="wizard-accordion__item">
           <button type="button" class="wizard-accordion__head" data-acc="brightness">调节亮度/焦点</button>
           <div class="wizard-accordion__body">
-            <div class="wizard-form-row"><label>曝光</label><input type="number" value="50" min="0" max="100" data-field="exposure" /></div>
-            <div class="wizard-form-row"><label>增益</label><input type="number" value="1" min="0" max="10" step="0.1" data-field="gain" /></div>
+            <div class="wizard-form-row"><label>曝光</label><input type="number" value="50" min="0" max="100" data-osk="int" data-field="exposure" inputmode="none" /></div>
+            <div class="wizard-form-row"><label>增益</label><input type="number" value="1" min="0" max="10" step="0.1" data-osk="decimal" data-field="gain" inputmode="none" /></div>
           </div>
         </div>
         <div class="wizard-accordion__item">
@@ -1060,9 +1063,9 @@ export class Wizard {
           </div>
         </div>
         <div class="wizard-form-row"><label>综合判断OK时</label><select><option>不切换</option></select></div>
-        <div class="wizard-form-row"><label>延迟 (ms)</label><input type="number" value="3000" min="0" max="10000" /></div>
+        <div class="wizard-form-row"><label>延迟 (ms)</label><input type="number" data-osk="int" value="3000" min="0" max="10000" inputmode="none" /></div>
         <div class="wizard-form-row"><label>综合判断NG时</label><select><option>不切换</option></select></div>
-        <div class="wizard-form-row"><label>延迟 (ms)</label><input type="number" value="3000" min="0" max="10000" /></div>
+        <div class="wizard-form-row"><label>延迟 (ms)</label><input type="number" data-osk="int" value="3000" min="0" max="10000" inputmode="none" /></div>
         <div class="wizard-form-row"><label>判断NG的时机</label><select><option>每次触发</option></select></div>
         <div class="wizard-form-row"><label>重试次数</label><input type="number" value="5" min="0" max="999" disabled /></div>
       </div>
@@ -1084,13 +1087,13 @@ export class Wizard {
               </select>
             </div>
             <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>串口</label>
-              <input type="text" data-field="io-serial-port" value="${io.serial_port || "COM4"}" />
+              <input type="text" data-osk="text" data-field="io-serial-port" value="${io.serial_port || "COM4"}" inputmode="none" autocomplete="off" />
             </div>
             <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>波特率</label>
-              <input type="number" data-field="io-baudrate" value="${io.baudrate ?? 9600}" min="300" max="115200" />
+              <input type="number" data-osk="int" data-field="io-baudrate" value="${io.baudrate ?? 9600}" min="300" max="115200" inputmode="none" />
             </div>
             <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>数据位</label>
-              <input type="number" data-field="io-bytesize" value="${io.bytesize ?? 8}" min="5" max="8" />
+              <input type="number" data-osk="int" data-field="io-bytesize" value="${io.bytesize ?? 8}" min="5" max="8" inputmode="none" />
             </div>
             <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>校验位</label>
               <select data-field="io-parity">
@@ -1100,28 +1103,28 @@ export class Wizard {
               </select>
             </div>
             <div class="wizard-form-row wizard-io-rtu-field${rtuFieldsHidden}"><label>停止位</label>
-              <input type="number" data-field="io-stopbits" value="${io.stopbits ?? 1}" min="1" max="2" />
+              <input type="number" data-osk="int" data-field="io-stopbits" value="${io.stopbits ?? 1}" min="1" max="2" inputmode="none" />
             </div>
             <div class="wizard-form-row wizard-io-tcp-field${tcpFieldsHidden}"><label>TCP 主机</label>
-              <input type="text" data-field="io-host" value="${io.host || "127.0.0.1"}" />
+              <input type="text" data-osk="ip" data-field="io-host" value="${io.host || "127.0.0.1"}" inputmode="none" autocomplete="off" />
             </div>
             <div class="wizard-form-row wizard-io-tcp-field${tcpFieldsHidden}"><label>TCP 端口</label>
-              <input type="number" data-field="io-port" value="${io.port ?? 502}" min="1" max="65535" />
+              <input type="number" data-osk="int" data-field="io-port" value="${io.port ?? 502}" min="1" max="65535" inputmode="none" />
             </div>
             <div class="wizard-form-row"><label>从站地址</label>
-              <input type="number" data-field="io-unit-id" value="${io.unit_id ?? 1}" min="1" max="247" />
+              <input type="number" data-osk="int" data-field="io-unit-id" value="${io.unit_id ?? 1}" min="1" max="247" inputmode="none" />
             </div>
             <div class="wizard-form-row"><label>轮询间隔 (ms)</label>
-              <input type="number" data-field="io-poll-interval" value="${io.poll_interval_ms ?? 50}" min="10" max="5000" />
+              <input type="number" data-osk="int" data-field="io-poll-interval" value="${io.poll_interval_ms ?? 50}" min="10" max="5000" inputmode="none" />
             </div>
             <div class="wizard-form-row"><label>输出点动 (ms)</label>
-              <input type="number" data-field="io-output-pulse-ms" value="${io.output_pulse_ms ?? 200}" min="0" max="10000" />
+              <input type="number" data-osk="int" data-field="io-output-pulse-ms" value="${io.output_pulse_ms ?? 200}" min="0" max="10000" inputmode="none" />
             </div>
             <div class="wizard-form-row"><label>综合判断NG 保持 (ms)</label>
-              <input type="number" data-field="io-result-ng-hold-ms" value="${io.result_ng_hold_ms ?? 3000}" min="0" max="60000" />
+              <input type="number" data-osk="int" data-field="io-result-ng-hold-ms" value="${io.result_ng_hold_ms ?? 3000}" min="0" max="60000" inputmode="none" />
             </div>
             <div class="wizard-form-row"><label>重连间隔 (s)</label>
-              <input type="number" data-field="io-reconnect-interval" value="${io.reconnect_interval_s ?? 3}" min="1" max="60" />
+              <input type="number" data-osk="int" data-field="io-reconnect-interval" value="${io.reconnect_interval_s ?? 3}" min="1" max="60" inputmode="none" />
             </div>
           </div>
           <div class="wizard-modbus-io-panel">
@@ -2029,12 +2032,12 @@ export class Wizard {
             <option value="circle" ${params.target_shape === "circle" ? "selected" : ""}>圆形</option>
           </select>
         </div>
-        <div class="wizard-form-row"><label>尺寸容差</label><input type="number" step="0.01" data-param-field="size_tolerance" value="${params.size_tolerance ?? 0.15}" /></div>
-        <div class="wizard-form-row"><label>位置容差(px)</label><input type="number" step="0.1" data-param-field="position_tolerance" value="${params.position_tolerance ?? 10}" /></div>
-        <div class="wizard-form-row"><label>期望中心X</label><input type="number" data-param-field="exp_center_0" value="${expCenter[0] ?? ""}" /></div>
-        <div class="wizard-form-row"><label>期望中心Y</label><input type="number" data-param-field="exp_center_1" value="${expCenter[1] ?? ""}" /></div>
-        <div class="wizard-form-row"><label>期望尺寸1</label><input type="number" data-param-field="exp_size_0" value="${expSize[0] ?? ""}" /></div>
-        <div class="wizard-form-row"><label>期望尺寸2</label><input type="number" data-param-field="exp_size_1" value="${expSize[1] ?? ""}" /></div>
+        <div class="wizard-form-row"><label>尺寸容差</label><input type="number" step="0.01" data-osk="decimal" data-param-field="size_tolerance" value="${params.size_tolerance ?? 0.15}" inputmode="none" /></div>
+        <div class="wizard-form-row"><label>位置容差(px)</label><input type="number" step="0.1" data-osk="decimal" data-param-field="position_tolerance" value="${params.position_tolerance ?? 10}" inputmode="none" /></div>
+        <div class="wizard-form-row"><label>期望中心X</label><input type="number" data-osk="int" data-param-field="exp_center_0" value="${expCenter[0] ?? ""}" inputmode="none" /></div>
+        <div class="wizard-form-row"><label>期望中心Y</label><input type="number" data-osk="int" data-param-field="exp_center_1" value="${expCenter[1] ?? ""}" inputmode="none" /></div>
+        <div class="wizard-form-row"><label>期望尺寸1</label><input type="number" data-osk="int" data-param-field="exp_size_0" value="${expSize[0] ?? ""}" inputmode="none" /></div>
+        <div class="wizard-form-row"><label>期望尺寸2</label><input type="number" data-osk="int" data-param-field="exp_size_1" value="${expSize[1] ?? ""}" inputmode="none" /></div>
         `}
     `;
 

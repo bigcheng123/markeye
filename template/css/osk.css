@@ -1,0 +1,129 @@
+/* 应用内软键盘 */
+
+#osk-root {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  pointer-events: none;
+}
+
+#osk-root.is-open {
+  pointer-events: none;
+}
+
+#osk-root .osk-backdrop {
+  display: none;
+}
+
+#osk-root .osk-shell {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: auto;
+  background: #2f3338;
+  border-top: 2px solid #1a1d21;
+  box-shadow: 0 -4px 18px rgba(0, 0, 0, 0.35);
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.osk-panel {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.osk-num {
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.osk-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  justify-content: center;
+}
+
+.osk-row:last-child {
+  margin-bottom: 0;
+}
+
+.osk-row--actions .osk-key--ok {
+  flex: 2;
+}
+
+.osk-key {
+  flex: 1;
+  min-width: 44px;
+  min-height: 48px;
+  padding: 0 6px;
+  border: 1px solid #1a1d21;
+  border-radius: 4px;
+  background: #4a5058;
+  color: #fff;
+  font-size: 18px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.osk-key:active {
+  filter: brightness(1.15);
+  background: #5c6470;
+}
+
+.osk-key--func {
+  background: #3a3f46;
+  font-size: 16px;
+}
+
+.osk-key--ok {
+  background: #2a7ab5;
+  border-color: #1f5f8a;
+}
+
+.osk-key--ok:active {
+  background: #3490d4;
+}
+
+.osk-key--wide {
+  flex: 1.4;
+  font-size: 14px;
+}
+
+.osk-key--space {
+  flex: 3.2;
+  font-size: 15px;
+}
+
+.osk-key.is-active {
+  background: #ff9900;
+  color: #1a1a1a;
+  border-color: #cc7a00;
+}
+
+.osk-text .osk-key {
+  min-width: 36px;
+  font-size: 16px;
+}
+
+body.osk-open {
+  /* 预留底部空间，减少内容被遮挡（配合 scrollIntoView） */
+  padding-bottom: var(--osk-height, 280px);
+}
+
+@media (max-width: 900px) {
+  .osk-text .osk-key {
+    min-width: 28px;
+    min-height: 44px;
+    font-size: 14px;
+    padding: 0 2px;
+  }
+
+  .osk-row {
+    gap: 4px;
+  }
+}

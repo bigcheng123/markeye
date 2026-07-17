@@ -370,7 +370,8 @@ export class ImageViewer {
 
   _hitTolerance() {
     const scale = this.imgWidth && this.svg?.clientWidth ? this.svg.clientWidth / this.imgWidth : 1;
-    return 10 / Math.max(scale, 0.01);
+    // 略放大命中半径，便于触摸屏抓取角点
+    return 16 / Math.max(scale, 0.01);
   }
 
   _hitTestRectRoi(imgX, imgY, roi) {
@@ -483,7 +484,7 @@ export class ImageViewer {
           const h = document.createElementNS(ns, "circle");
           h.setAttribute("cx", String(cx * scaleX));
           h.setAttribute("cy", String(cy * scaleY));
-          h.setAttribute("r", "6");
+          h.setAttribute("r", "10");
           h.setAttribute("fill", stroke);
           h.setAttribute("stroke", "#fff");
           h.setAttribute("stroke-width", "1.5");
@@ -495,12 +496,21 @@ export class ImageViewer {
 
   _bindRoiEditorEvents() {
     if (!this.svg) return;
+    /** @type {number | null} */
+    let activePointerId = null;
     const onDown = (e) => {
       if (!this._roiEdit.active) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
       const p = this._clientToImageXY(e.clientX, e.clientY);
       if (!p) return;
       this._roiEdit.dragging = true;
       this._roiEdit._start = p;
+      activePointerId = e.pointerId;
+      try {
+        this.svg.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
       const roi = this._roiEdit.roi;
       const useCorners = this._roiEdit.handles === "corners" && roi?.shape !== "circle";
 
@@ -549,6 +559,7 @@ export class ImageViewer {
     };
     const onMove = (e) => {
       if (!this._roiEdit.active || !this._roiEdit.dragging) return;
+      if (activePointerId != null && e.pointerId !== activePointerId) return;
       const p = this._clientToImageXY(e.clientX, e.clientY);
       if (!p) return;
       const roi = this._roiEdit.roi;
@@ -591,6 +602,7 @@ export class ImageViewer {
     };
     const onUp = (e) => {
       if (!this._roiEdit.active) return;
+      if (activePointerId != null && e.pointerId !== activePointerId) return;
       const p = this._clientToImageXY(e.clientX, e.clientY);
       if (p && this._roiEdit.allowPick) {
         const hsv = this._pickPixelHsvAt(p.x, p.y);
@@ -602,11 +614,21 @@ export class ImageViewer {
       this._roiEdit.anchor = null;
       this._roiEdit._start = null;
       this._roiEdit._dragOffset = null;
+      if (activePointerId != null) {
+        try {
+          this.svg.releasePointerCapture(activePointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+      activePointerId = null;
     };
 
-    this.svg.addEventListener("mousedown", onDown);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    this.svg.style.touchAction = "none";
+    this.svg.addEventListener("pointerdown", onDown);
+    this.svg.addEventListener("pointermove", onMove);
+    this.svg.addEventListener("pointerup", onUp);
+    this.svg.addEventListener("pointercancel", onUp);
   }
 
   _bindToolbar() {
@@ -1001,7 +1023,7 @@ export class ImageViewer {
           const h = document.createElementNS(ns, "circle");
           h.setAttribute("cx", String(cx * scaleX));
           h.setAttribute("cy", String(cy * scaleY));
-          h.setAttribute("r", "6");
+          h.setAttribute("r", "10");
           h.setAttribute("fill", stroke);
           h.setAttribute("stroke", "#fff");
           h.setAttribute("stroke-width", "1.5");
